@@ -29,7 +29,11 @@ from torchvision.models import resnet18
 from ultralytics import YOLO
 
 from src.preprocessing import draw_results, resize_for_display
-from repair_inpaint import RepairConfig, generate_repaired_image_multi, load_inpaint_pipeline
+from repair_inpaint import (
+    RepairConfig,
+    generate_repaired_image_full,
+    load_inpaint_pipeline,
+)
 
 
 # ---------------------------------------------------------
@@ -215,8 +219,14 @@ def load_damage_type_model():
 
 @st.cache_resource(show_spinner=False)
 def load_repair_pipeline():
-    """복원 버튼을 처음 눌렀을 때만 생성형 인페인팅 모델을 로드."""
-    return load_inpaint_pipeline()
+    """복원 버튼을 처음 눌렀을 때만 생성형 인페인팅 모델을 로드.
+
+    sequential_offload=True: VRAM을 가장 아껴 쓰는 모드(느리지만 안전).
+    GPU VRAM이 16GB 이상으로 넉넉하고 속도가 더 중요하면
+    sequential_offload=False 로 바꿔보세요(대신 YOLO 등 다른 모델과
+    VRAM을 나눠 쓸 때 OOM 위험이 커집니다).
+    """
+    return load_inpaint_pipeline(low_vram=True, sequential_offload=True)
 
 
 DAMAGE_TYPE_TF = transforms.Compose(
@@ -705,24 +715,35 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
                             ):
                                 repair_pipe = load_repair_pipeline()
 
-                                repaired_image, _, _ = generate_repaired_image_multi(
+                                # 검출된 클래스명 전체를 영문 그대로 프롬프트에
+                                # 전달해 "무엇이 손상됐는지"를 명확히 지시
+                                detected_classes = sorted({
+                                    results[0].names[int(b.cls[0])]
+                                    for b in boxes
+                                    if float(b.conf[0]) >= 0.3
+                                })
+                                damaged_parts = ", ".join(detected_classes)
+
+                                repaired_image, _, _ = generate_repaired_image_full(
                                     pipe=repair_pipe,
                                     original_image=original_pil,
                                     damage_boxes=damage_boxes,
-                                    part_label=top_part_label,
-                                    damage_label="vehicle exterior damage",
+                                    damaged_parts=damaged_parts,
                                     config=RepairConfig(
-                                            context_ratio=0.55,
-                                            mask_blur_radius=9,
-                                            target_size=512,
-                                            steps=30,
-                                            guidance_scale=9.0,
-                                            strength=0.80,
+                                            mask_blur_radius=15,
+                                            target_size=1024,
+                                            steps=28,
+                                            guidance_scale=2.5,
+                                            true_cfg_scale=1.0,
+                                            low_vram=True,
                                             seed=123,
                                     ),
-                                    top_pad_ratio=0.03,
-                                    side_pad_ratio=0.15,
-                                    extend_to_bottom=True,
+                                    # 박스 밖으로 이어진 파손(범퍼/파편)까지
+                                    # 편집 영역에 포함하도록 넉넉히 확장
+                                    side_pad_ratio=0.45,
+                                    top_pad_ratio=0.20,
+                                    bottom_pad_ratio=1.10,
+                                    merge_boxes=True,
                                     watermark_frac=0.12,
                                 )
 
