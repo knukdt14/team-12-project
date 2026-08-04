@@ -1,0 +1,10 @@
+ultralytics>=8.3
+opencv-python>=4.8
+numpy>=1.24
+pandas>=2.0
+matplotlib>=3.7
+seaborn>=0.12
+streamlit>=1.60  # width= 파라미터(use_container_width 대체) 지원 버전
+Pillow>=10.0
+torch>=2.0
+torchvision>=0.15
