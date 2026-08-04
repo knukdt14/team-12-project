@@ -20,3 +20,6 @@ faiss-cpu>=1.8
 
 # LLM 클라이언트 (services/llm_client.py, Ollama REST 호출)
 requests>=2.31
+
+# 정비소 검색 (routers/repair_shops.py, 카카오 로컬 API)
+python-dotenv>=1.0
