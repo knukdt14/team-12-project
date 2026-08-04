@@ -41,7 +41,7 @@ from repair_inpaint import (
 # ---------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
 
-MODEL_PATH = BASE_DIR / "runs/detect/runs/train_20260804_0217/weights/best.pt"
+MODEL_PATH = BASE_DIR / "runs/detect/runs/train_20260804_1124/weights/best.pt"  # YOLO11n, 16종(Bodypanel-Dent 제거) 재학습, test mAP50 0.887
 FALLBACK = "yolo11n.pt"
 
 DAMAGE_TYPE_MODEL_PATH = BASE_DIR / "runs/damage_type_classifier/best.pt"

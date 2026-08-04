@@ -8,3 +8,10 @@ streamlit>=1.60  # width= 파라미터(use_container_width 대체) 지원 버전
 Pillow>=10.0
 torch>=2.0
 torchvision>=0.15
+requests>=2.31
+folium>=0.20
+streamlit-folium>=0.27
+
+# 백엔드(FastAPI)는 backend/requirements.txt 참고
+# 손상 복구 예상 이미지 생성(repair_inpaint.py)은 보류 중 — 필요 시 diffusers, transformers,
+# accelerate, safetensors, sentencepiece, protobuf 별도 설치(repair_inpaint.py 상단 안내 참고)
