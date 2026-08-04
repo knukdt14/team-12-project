@@ -1240,6 +1240,11 @@ if menu in ["🏠 홈", "📍 정비소 찾기"]:
                         popup_html,
                         max_width=300,
                     ),
+                    icon=folium.Icon(
+                        color="red",
+                        icon="wrench",
+                        prefix="fa",
+                    ),
                 ).add_to(repair_map)
 
             map_col, list_col = st.columns(
@@ -1260,40 +1265,41 @@ if menu in ["🏠 홈", "📍 정비소 찾기"]:
             with list_col:
                 st.markdown("#### 🚗 가까운 정비소")
 
-                for i, shop in enumerate(shops, start=1):
-                    with st.container(border=True):
-                        st.markdown(f"### {i}. {shop['name']}")
-                        st.caption(f"📍 {shop['address']}")
+                with st.container(height=550, border=False):
+                    for i, shop in enumerate(shops, start=1):
+                        with st.container(border=True):
+                            st.markdown(f"### {i}. {shop['name']}")
+                            st.caption(f"📍 {shop['address']}")
 
-                        if shop["phone"]:
-                            st.write(f"☎️ {shop['phone']}")
+                            if shop["phone"]:
+                                st.write(f"☎️ {shop['phone']}")
 
-                        if shop["distance"]:
-                            try:
-                                distance_m = int(shop["distance"])
+                            if shop["distance"]:
+                                try:
+                                    distance_m = int(shop["distance"])
 
-                                if distance_m >= 1000:
-                                    distance_text = (
-                                        f"{distance_m / 1000:.1f} km"
+                                    if distance_m >= 1000:
+                                        distance_text = (
+                                            f"{distance_m / 1000:.1f} km"
+                                        )
+                                    else:
+                                        distance_text = f"{distance_m} m"
+
+                                    st.write(
+                                        f"🚗 약 {distance_text}"
                                     )
-                                else:
-                                    distance_text = f"{distance_m} m"
 
-                                st.write(
-                                    f"🚗 약 {distance_text}"
+                                except ValueError:
+                                    st.write(
+                                        f'🚗 {shop["distance"]}'
+                                    )
+
+                            if shop.get("place_url"):
+                                st.link_button(
+                                    "🗺️ 카카오맵에서 보기",
+                                    shop["place_url"],
+                                    use_container_width=True,
                                 )
-
-                            except ValueError:
-                                st.write(
-                                    f'🚗 {shop["distance"]}'
-                                )
-
-                        if shop.get("place_url"):
-                            st.link_button(
-                                "🗺️ 카카오맵에서 보기",
-                                shop["place_url"],
-                                use_container_width=True,
-                            )
 
         if st.button(
             "검색 결과 초기화",
