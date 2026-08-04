@@ -1198,6 +1198,7 @@ if menu in ["🏠 홈", "📍 정비소 찾기"]:
             repair_map = folium.Map(
                 location=[latitude, longitude],
                 zoom_start=14,
+                tiles="cartodbpositron",
             )
 
             folium.Marker(
