@@ -1,25 +1,23 @@
 """POST /diagnose — 파손 이미지 업로드 → 부위/손상 탐지 결과 반환.
 
-TODO: services/detector.py 연결 후 app.py의 YOLO(부위 탐지) + ResNet18(손상 종류
-분류) 추론 로직으로 교체. 지금은 API 형태만 확인하기 위한 더미 응답.
+services/detector.py의 실제 YOLO(부위 탐지) + ResNet18(손상 종류 분류) 추론과 연결됨.
+severity는 박스 크기(이미지 대비 면적 비율) 기준 low/medium/high 휴리스틱 (services/detector.py 참고).
 """
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from schemas import Detection, DiagnoseResponse
+from services import detector
 
 router = APIRouter()
 
 
 @router.post("/diagnose", response_model=DiagnoseResponse)
 async def diagnose(file: UploadFile = File(...)):
-    # 더미 응답 — 업로드된 파일 내용은 아직 사용하지 않음(형태만 검증)
-    dummy = [
-        Detection(
-            part="front-bumper",
-            damage_type="dent",
-            severity="medium",
-            confidence=0.87,
-            bbox=[120.0, 80.0, 340.0, 260.0],
-        )
-    ]
-    return DiagnoseResponse(results=dummy)
+    image_bytes = await file.read()
+    try:
+        raw_results = detector.detect(image_bytes)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    results = [Detection(**r) for r in raw_results]
+    return DiagnoseResponse(results=results)
