@@ -54,8 +54,8 @@ KOREAN_NAMES = {
 
 # severity 규칙: 박스 면적이 전체 이미지에서 차지하는 비율 기준 (임시 휴리스틱).
 # 실측 데이터로 검증된 기준은 아니라서, 데모 결과 보고 임계값(SEVERITY_*_RATIO)은 조정 가능.
-SEVERITY_SMALL_RATIO = 0.05  # 이 비율 미만 → low
-SEVERITY_LARGE_RATIO = 0.15  # 이 비율 이상 → high (그 사이는 medium)
+SEVERITY_SMALL_RATIO = 0.05  # 이 비율 미만 → minor
+SEVERITY_LARGE_RATIO = 0.15  # 이 비율 이상 → severe (그 사이는 moderate)
 
 MIN_SIZE = 100  # px — 이보다 작으면 오탐 위험이 커서 차단 (app.py와 동일 기준)
 
@@ -94,8 +94,9 @@ def load_models():
 def _compute_severity(bbox, img_w, img_h):
     """박스 면적이 이미지 전체에서 차지하는 비율로 심각도를 추정.
 
-    < 5%: low, 5~15%: medium, >= 15%: high.
+    < 5%: minor, 5~15%: moderate, >= 15%: severe.
     손상 부위가 클수록 심각하다는 단순 가정에 기반한 임시 규칙.
+    라벨(minor/moderate/severe)은 data/단가표.json의 severity_def와 맞춘 것.
     """
     x1, y1, x2, y2 = bbox
     box_area = max(0.0, x2 - x1) * max(0.0, y2 - y1)
@@ -105,14 +106,18 @@ def _compute_severity(bbox, img_w, img_h):
 
     ratio = box_area / image_area
     if ratio < SEVERITY_SMALL_RATIO:
-        return "low"
+        return "minor"
     if ratio < SEVERITY_LARGE_RATIO:
-        return "medium"
-    return "high"
+        return "moderate"
+    return "severe"
 
 
 def _classify_damage_type(img_bgr, box_xyxy):
-    """박스 영역을 여백 포함해 crop한 뒤 손상 종류를 분류해 한글 라벨 반환"""
+    """박스 영역을 여백 포함해 crop한 뒤 손상 종류를 분류해 원본 영문 클래스명 반환.
+
+    한글 표시는 호출부에서 DAMAGE_TYPE_KOREAN으로 변환한다 (part_en/damage_type_en을
+    단가표.json 조회에 그대로 쓰기 위해 원본 영문값을 유지).
+    """
     h, w = img_bgr.shape[:2]
     x1, y1, x2, y2 = box_xyxy
     bw, bh = x2 - x1, y2 - y1
@@ -127,15 +132,14 @@ def _classify_damage_type(img_bgr, box_xyxy):
     tensor = DAMAGE_TYPE_TF(Image.fromarray(crop_rgb)).unsqueeze(0)
     with torch.no_grad():
         pred = _damage_type_clf(tensor).argmax(1).item()
-    cls_name = _damage_type_classes[pred]
-    return DAMAGE_TYPE_KOREAN.get(cls_name, cls_name)
+    return _damage_type_classes[pred]
 
 
 def detect(image_bytes: bytes, conf_threshold: float = 0.3):
     """이미지 바이트를 받아 부위 탐지 + 손상 종류 분류 결과 리스트를 반환.
 
     반환 형식은 schemas.Detection과 1:1로 맞춘다:
-    [{"part", "damage_type", "severity", "confidence", "bbox"}, ...]
+    [{"part", "part_en", "damage_type", "damage_type_en", "severity", "confidence", "bbox"}, ...]
     유효하지 않은 이미지/너무 작은 이미지는 ValueError를 던진다 (라우터에서 400으로 변환).
     """
     load_models()
@@ -160,13 +164,16 @@ def detect(image_bytes: bytes, conf_threshold: float = 0.3):
         bbox = list(map(float, b.xyxy[0]))
         confidence = float(b.conf[0])
 
-        damage_type = "-"
+        damage_type_en = "-"
         if _damage_type_clf is not None:
-            damage_type = _classify_damage_type(img_bgr, tuple(bbox))
+            damage_type_en = _classify_damage_type(img_bgr, tuple(bbox))
+        damage_type = DAMAGE_TYPE_KOREAN.get(damage_type_en, damage_type_en)
 
         detections.append({
             "part": part,
+            "part_en": part_en,
             "damage_type": damage_type,
+            "damage_type_en": damage_type_en,
             "severity": _compute_severity(bbox, w, h),
             "confidence": confidence,
             "bbox": bbox,

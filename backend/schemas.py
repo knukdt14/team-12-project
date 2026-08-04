@@ -10,9 +10,11 @@ from pydantic import BaseModel
 
 
 class Detection(BaseModel):
-    part: str
-    damage_type: str
-    severity: str
+    part: str  # 화면 표시용 한글 부위명 (예: "전방 범퍼")
+    part_en: str  # 단가표.json 조회용 YOLO 원본 클래스명 (예: "front-bumper-dent")
+    damage_type: str  # 화면 표시용 한글 손상 종류 (예: "찌그러짐")
+    damage_type_en: str  # 단가표.json 조회용 분류기 원본 클래스명 (예: "dent")
+    severity: str  # "minor" | "moderate" | "severe" (단가표.json 정의와 통일)
     confidence: float
     bbox: List[float]  # [x1, y1, x2, y2]
 
