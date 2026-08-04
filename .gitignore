@@ -8,7 +8,10 @@ env/
 .env
 
 # Dataset (2GB+, re-downloadable from Roboflow — see README)
-data/
+# 주의: 앞에 "/"를 붙여 저장소 루트의 data/만 무시하도록 한정함.
+# "/" 없이 "data/"라고만 쓰면 backend/data/ 같은 하위 data 폴더까지 전부 무시돼서
+# backend/data/단가표.json이 한 번도 git에 커밋되지 못하는 버그가 있었음.
+/data/
 
 # Pretrained base weights (auto-downloaded by ultralytics on first run)
 yolo11n.pt

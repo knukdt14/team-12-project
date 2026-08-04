@@ -10,3 +10,13 @@ numpy>=1.24
 Pillow>=10.0
 torch>=2.0
 torchvision>=0.15
+
+# RAG (정비 상담 챗봇) — 벡터스토어 빌드(ai/build_vectorstore.py) + 런타임 검색(services/rag.py) 공용
+langchain>=0.3
+langchain-community>=0.3
+langchain-text-splitters>=0.3
+sentence-transformers>=3.0
+faiss-cpu>=1.8
+
+# LLM 클라이언트 (services/llm_client.py, Ollama REST 호출)
+requests>=2.31
