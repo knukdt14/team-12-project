@@ -12,9 +12,11 @@ import json
 from pathlib import Path
 import os
 import requests
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
 PRICE_TABLE_PATH = BASE_DIR / "단가표.json"

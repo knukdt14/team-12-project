@@ -12,6 +12,11 @@ requests>=2.31
 folium>=0.20
 streamlit-folium>=0.27
 
-# 백엔드(FastAPI)는 backend/requirements.txt 참고
+# estimate_api.py(프로젝트 루트, Kakao 지도 연동) 실행에 필요
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-dotenv>=1.0
+
+# backend/main.py 쪽(공식 백엔드 스캐폴딩)은 backend/requirements.txt 참고
 # 손상 복구 예상 이미지 생성(repair_inpaint.py)은 보류 중 — 필요 시 diffusers, transformers,
 # accelerate, safetensors, sentencepiece, protobuf 별도 설치(repair_inpaint.py 상단 안내 참고)
