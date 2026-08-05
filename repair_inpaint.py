@@ -1,8 +1,8 @@
 """
 AI 복원 예상 이미지 생성 모듈
-- YOLO가 검출한 bbox들을 기준으로 손상 부위 주변만 crop
-- FLUX.1 Kontext (black-forest-labs/FLUX.1-Kontext-dev)로 손상 영역을
-  자연어 지시문(prompt) 기반으로 복원
+- YOLO가 검출한 bbox들을 기준으로 손상 부위 마스크 생성
+- SD1.5 Inpainting (stable-diffusion-v1-5/stable-diffusion-inpainting)으로
+  마스크 영역만 복원 생성
 - 생성 결과를 원본 이미지의 해당 영역에 다시 합성
 
 주의:
@@ -22,22 +22,27 @@ AI 복원 예상 이미지 생성 모듈
       마스크에서 강제 제외
 5. 마스크가 헤드라이트/그릴 경계를 침범해 형태가 왜곡되는 문제
    -> negative_prompt에 왜곡 방지 문구 추가 + side_pad_ratio 축소
-6. Stable Diffusion Inpainting -> FLUX.1 Kontext 로 교체
-   -> Kontext는 mask_image를 받는 인페인팅 파이프라인이 아니라, 이미지 전체 +
-      자연어 편집 지시문을 입력받아 "지시된 부분만 바꾸고 나머지는 그대로
-      유지"하도록 학습된 in-context 편집 모델입니다. 그래서:
-        * pipe 호출 시 mask_image/strength 파라미터가 없어졌습니다.
-        * 대신 자체적으로 만드는 마스크(_make_crop_mask 계열)는 "모델에게 알려주는
-          용도"가 아니라, 생성 결과와 원본 크롭을 합성(Image.composite)할 때
-          손상 영역 바깥은 원본 픽셀을 100% 그대로 쓰기 위한 안전장치로만 씁니다.
-        * negative_prompt는 Kontext가 guidance-distilled 모델이라 기본적으로
-          무시되며, true_cfg_scale(RepairConfig.true_cfg_scale) > 1.0 으로 설정
-          해야 실제로 반영됩니다(대신 추론 속도가 약 2배 느려집니다).
+6. Stable Diffusion Inpainting -> FLUX.1 Kontext 로 교체했다가, 다시 SD1.5
+   Inpainting 으로 되돌림 (팀 표준 모델에 맞춤)
+   -> FLUX.1 Kontext는 품질은 좋지만 gated repo(라이선스 동의 필요) + 약 24GB +
+      GPU 사실상 필수라서, 팀원 간 재현과 클라우드 배포가 어려웠습니다.
+   -> SD1.5 Inpainting은 약 2GB에 공개 모델이라 팀원 누구나 같은 결과를 얻을 수
+      있습니다. 대신 mask_image를 반드시 넘겨야 하는 "진짜" 인페인팅 모델이라,
+      마스크의 역할이 아래처럼 이원화됩니다:
+        * pipe에 넘기는 마스크 = "여기를 새로 그려라"라는 지시 (흰색=생성 대상)
+        * 합성(Image.composite)에 쓰는 마스크 = 생성 결과 중 어디를 채택할지.
+          마스크 바깥은 원본 픽셀을 100% 유지하는 안전장치.
+      두 용도에 같은 마스크를 쓰되, pipe 입력용은 블러를 빼고(경계가 흐리면
+      모델이 어디까지 그릴지 헷갈려 함) 합성용만 페더링합니다.
+        * negative_prompt가 정상 동작합니다(SD1.5는 classifier-free guidance를
+          그대로 쓰므로 true_cfg_scale 같은 우회가 필요 없습니다).
+        * strength로 원본을 얼마나 남길지 조절합니다(1.0=완전 새로 생성).
 """
 
 from __future__ import annotations
 
 import gc
+import os
 from dataclasses import dataclass
 
 import numpy as np
@@ -45,7 +50,15 @@ import torch
 from PIL import Image, ImageDraw, ImageFilter
 
 
-DEFAULT_MODEL_ID = "black-forest-labs/FLUX.1-Kontext-dev"
+# SD1.5 Inpainting.
+#
+# 원본 `runwayml/stable-diffusion-inpainting` 저장소는 내려가서, 아래 공식
+# 커뮤니티 재업로드본을 기본값으로 씁니다. 팀에서 다른 미러를 쓰고 있다면
+# 환경변수로 덮어쓰세요:
+#     REPAIR_MODEL_ID=benjamin-paine/stable-diffusion-v1-5-inpainting
+DEFAULT_MODEL_ID = os.getenv(
+    "REPAIR_MODEL_ID", "stable-diffusion-v1-5/stable-diffusion-inpainting"
+)
 
 
 @dataclass
@@ -54,11 +67,15 @@ class RepairConfig:
     context_ratio: float = 0.55       # 크롭 범위. 늘어진 파편까지 포함하도록 넉넉히
     damage_pad_ratio: float = 0.10    # generate_repaired_image(단일 박스용) 에서만 사용
     mask_blur_radius: int = 9
-    target_size: int = 1024           # FLUX Kontext는 1024 부근에서 최적. 512도 동작은 함
-    steps: int = 28                   # Kontext 공식 예제 권장값
-    guidance_scale: float = 2.5       # Kontext 권장값 (SD의 7~9 스케일과는 다름)
-    true_cfg_scale: float = 1.0       # 1.0이면 negative_prompt 비활성화(기본, 더 빠름)
-    low_vram: bool = True             # True면 enable_model_cpu_offload 사용 (12B 모델 VRAM 절약)
+    # SD1.5는 512x512로 학습됐습니다. 1024를 넣으면 같은 물체가 두 번 그려지는
+    # (duplication) 현상이 잘 나므로 512를 기본으로 둡니다.
+    target_size: int = 512
+    steps: int = 35                   # SD1.5 인페인팅 권장 30~50
+    guidance_scale: float = 7.5       # SD1.5 표준 CFG (Kontext의 2.5와 다름)
+    # 마스크 영역을 얼마나 새로 그릴지. 1.0이면 원본 픽셀을 무시하고 완전 재생성.
+    # 손상 복원은 "원래 형태를 되살리는" 작업이라 0.9 정도가 안정적입니다.
+    strength: float = 0.9
+    low_vram: bool = True             # True면 attention slicing + cpu offload
     seed: int = 42
 
 
@@ -79,60 +96,51 @@ def load_inpaint_pipeline(
     sequential_offload: bool = True,
 ):
     """
-    FLUX.1 Kontext diffusers 파이프라인 로드.
+    SD1.5 Inpainting diffusers 파이프라인 로드.
 
-    - CUDA 가능 시 bfloat16, 아니면 float32 + CPU (CPU는 매우 느립니다).
-    - low_vram=True인 경우, 세 단계 중 하나를 씁니다 (VRAM이 적을수록 아래로):
-        1) sequential_offload=True (기본값): enable_sequential_cpu_offload().
-           레이어 단위로 필요할 때만 GPU에 올리고 바로 내려서 순간 최대
-           VRAM 사용량이 가장 작습니다(수 GB 수준). 대신 가장 느립니다.
-           8GB급 GPU에서는 이 모드를 권장합니다.
-        2) sequential_offload=False: enable_model_cpu_offload().
-           텍스트 인코더/트랜스포머/VAE 같은 큰 서브모듈 단위로 올렸다
-           내려서 sequential보다 빠르지만, 순간 최대 VRAM 사용량이 더
-           큽니다(가장 큰 서브모듈 하나가 통째로 올라감). 16GB 이상
-           GPU에 권장합니다.
-    - low_vram=False: pipe.to("cuda")로 전부 GPU에 상주. 24GB 이상 GPU에서
-      가장 빠르지만, 다른 모델(YOLO 등)과 VRAM을 나눠 써야 하면 위험합니다.
-    - VAE에 slicing/tiling을 켜서 디코드 단계의 순간 메모리도 줄입니다.
-    - FLUX.1-Kontext-dev는 gated model이라 최초 1회
-      `hf auth login` 등으로 라이선스 동의 + 토큰 인증이 필요합니다.
+    - CUDA 가능 시 float16, 아니면 float32 + CPU.
+      SD1.5는 약 2GB(fp16 기준 ~1GB)라 FLUX(24GB)와 달리 8GB급 GPU에 통째로 올라갑니다.
+      CPU로도 512px / 35스텝이면 수 분 수준이라 GPU 없이도 시연은 가능합니다.
+    - low_vram=True: attention slicing + VAE slicing으로 순간 메모리를 낮춥니다.
+      YOLO/ResNet과 VRAM을 나눠 쓰는 상황이라 기본값으로 켜둡니다.
+    - sequential_offload=True: 추가로 enable_sequential_cpu_offload()까지 씁니다.
+      SD1.5에서는 보통 불필요하며(오히려 느려짐), 4GB 미만 GPU에서만 의미가 있습니다.
+    - safety_checker=None: 차량 사진에 오탐이 걸려 검은 이미지가 반환되는 것을 막습니다.
+      (수업용 데모라 무방합니다)
+    - FLUX와 달리 gated repo가 아니라서 라이선스 동의나 토큰이 필요 없습니다.
     """
     try:
-        from diffusers import FluxKontextPipeline
+        from diffusers import StableDiffusionInpaintPipeline
     except ImportError as exc:
         raise RuntimeError(
-            "diffusers에서 FluxKontextPipeline을 불러올 수 없습니다. "
-            "FLUX.1 Kontext는 최신 diffusers가 필요할 수 있습니다. 아래를 실행하세요:\n"
-            "python -m pip install -U git+https://github.com/huggingface/diffusers.git "
-            "transformers accelerate safetensors sentencepiece protobuf\n"
-            "그리고 https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev 에서 "
-            "라이선스에 동의한 뒤 `hf auth login`으로 인증하세요."
+            "diffusers에서 StableDiffusionInpaintPipeline을 불러올 수 없습니다.\n"
+            "python -m pip install -U diffusers transformers accelerate safetensors"
         ) from exc
 
     use_cuda = torch.cuda.is_available()
-    dtype = torch.bfloat16 if use_cuda else torch.float32
+    dtype = torch.float16 if use_cuda else torch.float32
 
-    pipe = FluxKontextPipeline.from_pretrained(
+    pipe = StableDiffusionInpaintPipeline.from_pretrained(
         model_id,
         torch_dtype=dtype,
+        safety_checker=None,
+        requires_safety_checker=False,
     )
 
     if use_cuda:
         if low_vram and sequential_offload:
             pipe.enable_sequential_cpu_offload()
-        elif low_vram:
-            pipe.enable_model_cpu_offload()
         else:
             pipe = pipe.to("cuda")
     else:
         pipe = pipe.to("cpu")
 
-    try:
-        pipe.vae.enable_slicing()
-        pipe.vae.enable_tiling()
-    except Exception:
-        pass
+    if low_vram:
+        try:
+            pipe.enable_attention_slicing()
+            pipe.vae.enable_slicing()
+        except Exception:
+            pass
 
     return pipe
 
@@ -179,10 +187,10 @@ def _make_crop_mask(
 ):
     """손상 영역 마스크 생성.
 
-    주의: 이 마스크는 모델에 입력되지 않습니다(Kontext는 mask_image를
-    받지 않음). 생성 결과와 원본 크롭을 합성할 때, 이 마스크 안쪽만
-    생성 결과를 쓰고 바깥쪽은 원본 픽셀을 그대로 유지하기 위한
-    블렌딩 전용 마스크입니다.
+    SD1.5 Inpainting에서 이 마스크는 두 곳에 쓰입니다.
+    1. 모델 입력 — 흰색(255) 영역만 새로 그립니다. _run_pipe가 128 기준으로
+       이진화해서 넘기므로, 여기서 넣은 블러는 모델 입력에는 영향이 없습니다.
+    2. 합성 — 블러된 원본 그대로 Image.composite에 써서 경계를 부드럽게 잇습니다.
     """
     cw, ch = crop_size
     x1, y1, x2, y2 = [float(v) for v in damage_box_in_crop]
@@ -244,10 +252,12 @@ def _resize_for_model(image: Image.Image, size: int):
 
 
 def _build_prompts(part_label: str, damage_label: str):
-    """FLUX Kontext는 instruction 스타일 편집 프롬프트에 잘 반응합니다.
+    """마스크 영역에 "무엇을 그려 넣을지"를 서술하는 프롬프트.
 
-    (SD Inpainting 시절의 키워드 나열형 프롬프트 대신, "무엇을 어떻게 바꿔라"를
-    명확한 문장으로 지시하고, 나머지는 그대로 유지하라고 명시합니다.)
+    SD1.5 Inpainting은 편집 지시문("~를 제거하라")이 아니라 결과물 묘사
+    ("깨끗한 순정 패널")에 반응합니다. 마스크 바깥은 어차피 건드리지 않으므로
+    "나머지는 그대로 두라"는 문장은 실질적인 효과가 없지만, 차량 종류·색상을
+    유지시키는 힌트로는 작동해서 남겨둡니다.
     """
     prompt = (
         f"Repair the damaged {part_label} in this photo. "
@@ -278,38 +288,54 @@ def _build_prompts(part_label: str, damage_label: str):
     return prompt, negative_prompt
 
 
-def _run_pipe(pipe, prompt, negative_prompt, model_image, config):
-    """파이프라인 실행.
+def _run_pipe(pipe, prompt, negative_prompt, model_image, config, mask_image=None):
+    """SD1.5 인페인팅 파이프라인 실행.
 
-    중요: width/height를 명시하지 않으면 FluxKontextPipeline이 입력을
-    자체 선호 해상도(PREFERRED_KONTEXT_RESOLUTIONS)로 다시 리사이즈해서
-    출력 종횡비가 입력과 달라질 수 있습니다. 그 결과를 원본 크기로
-    되돌려 붙이면 차량이 확대/이동된 것처럼 어긋나 보이는(정합 깨짐)
-    문제가 생기므로, 반드시 입력과 동일한 크기를 명시합니다.
+    mask_image는 필수입니다. SD 인페인팅은 "마스크가 흰색(255)인 픽셀만 새로
+    그리고 검은색(0)은 원본을 유지"하는 모델이라, 마스크를 안 넘기면 동작
+    자체가 성립하지 않습니다.
+
+    마스크 전처리 두 가지:
+    1. 모드를 "L"로 맞추고 model_image와 크기를 정확히 일치시킵니다.
+       크기가 다르면 diffusers 내부에서 리사이즈되며 경계가 어긋납니다.
+    2. 여기 들어오는 마스크는 블러를 빼고 이진에 가깝게 씁니다.
+       경계가 흐리면 모델이 "어디까지 그려야 하는지"를 애매하게 해석해
+       손상 흔적이 반쯤 남습니다. 부드러운 이음새는 합성 단계에서
+       블러된 마스크로 따로 처리합니다.
+
+    width/height를 명시하는 이유: 지정하지 않으면 파이프라인이 512로
+    강제 리사이즈해서 출력 종횡비가 입력과 달라지고, 원본에 되붙일 때
+    차량이 늘어나 보입니다.
     """
+    if mask_image is None:
+        raise ValueError(
+            "SD1.5 인페인팅에는 mask_image가 필요합니다. "
+            "호출부에서 손상 영역 마스크를 전달하세요."
+        )
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     generator = torch.Generator(device=device).manual_seed(config.seed)
 
     mw, mh = model_image.size
 
-    kwargs = dict(
-        image=model_image,
+    mask = mask_image.convert("L")
+    if mask.size != (mw, mh):
+        mask = mask.resize((mw, mh), Image.Resampling.NEAREST)
+    # 블러 잔재를 제거해 경계를 또렷하게 (128 초과분만 생성 대상)
+    mask = mask.point(lambda v: 255 if v > 128 else 0)
+
+    return pipe(
         prompt=prompt,
+        negative_prompt=negative_prompt,
+        image=model_image,
+        mask_image=mask,
         width=mw,
         height=mh,
         guidance_scale=config.guidance_scale,
+        strength=config.strength,
         num_inference_steps=config.steps,
         generator=generator,
-    )
-
-    # FLUX Kontext는 guidance-distilled 모델이라 negative_prompt는
-    # true_cfg_scale > 1.0일 때만 실제로 반영됩니다(기본 1.0이면 무시).
-    # true_cfg_scale > 1이면 스텝당 2번(조건/무조건) 추론하므로 약 2배 느려집니다.
-    if config.true_cfg_scale > 1.0:
-        kwargs["negative_prompt"] = negative_prompt
-        kwargs["true_cfg_scale"] = config.true_cfg_scale
-
-    return pipe(**kwargs).images[0]
+    ).images[0]
 
 
 def generate_repaired_image(
@@ -360,7 +386,9 @@ def generate_repaired_image(
 
     prompt, negative_prompt = _build_prompts(part_label, damage_label)
 
-    generated = _run_pipe(pipe, prompt, negative_prompt, model_image, config)
+    generated = _run_pipe(
+        pipe, prompt, negative_prompt, model_image, config, mask_image=mask
+    )
     free_gpu_memory()
     generated = generated.resize(crop.size, Image.Resampling.LANCZOS)
 
@@ -437,7 +465,9 @@ def generate_repaired_image_multi(
 
     prompt, negative_prompt = _build_prompts(part_label, damage_label)
 
-    generated = _run_pipe(pipe, prompt, negative_prompt, model_image, config)
+    generated = _run_pipe(
+        pipe, prompt, negative_prompt, model_image, config, mask_image=mask
+    )
     free_gpu_memory()
     generated = generated.resize(crop.size, Image.Resampling.LANCZOS)
 
@@ -566,7 +596,9 @@ def generate_repaired_image_full(
 
     prompt, negative_prompt = _build_prompts_full(damaged_parts)
 
-    generated = _run_pipe(pipe, prompt, negative_prompt, model_image, config)
+    generated = _run_pipe(
+        pipe, prompt, negative_prompt, model_image, config, mask_image=mask
+    )
     free_gpu_memory()
 
     # 입력과 동일 종횡비/크기로 생성됐으므로 원본 크기로 되돌리면 정렬됨

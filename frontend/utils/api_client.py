@@ -85,16 +85,38 @@ def call_repair_shops_api(x, y, radius, query="자동차 정비소", timeout=10)
     return response.json()
 
 
-def call_chat_api(session_id, message, timeout=30):
-    """backend의 /chat을 호출해 {"answer": ...}를 반환한다.
+def call_chat_api(session_id, message, diagnosis_summary="", timeout=300):
+    """backend의 /chat을 호출해 {"answer", "used_llm"}을 반환한다.
 
-    app.py의 "AI 상담" 탭은 아직 이 함수를 쓰지 않고 하드코딩된 답변을 쓰고
-    있음 — /chat 연동은 별도 작업으로 남아있음 (RAGS.py 통합 여부 포함).
+    diagnosis_summary: 이번 세션의 진단·견적 요약 문자열.
+        backend에 세션 저장소가 없어서 프론트가 매 요청에 실어 보낸다.
+        이 값이 없으면 LLM이 인용할 금액이 없어 "정비소에 방문하세요"만
+        반복하는 무의미한 답변이 나온다.
+
+    timeout이 긴 이유: LLM이 CPU 추론이라 첫 응답에 1~2분이 걸릴 수 있다.
     """
     response = requests.post(
         CHAT_URL,
-        json={"session_id": session_id, "message": message},
+        json={
+            "session_id": session_id,
+            "message": message,
+            "diagnosis_summary": diagnosis_summary,
+        },
         timeout=timeout,
     )
     response.raise_for_status()
     return response.json()
+
+
+def call_llm_health(timeout=5):
+    """backend의 /health/llm을 호출해 LLM 준비 상태를 반환. 실패하면 None.
+
+    첫 기동 후 2~3분간은 모델(약 1.6GB) 다운로드 중이라 ready=False다.
+    이 구간을 UI에 표시하지 않으면 폴백 답변을 버그로 오해하게 된다.
+    """
+    try:
+        response = requests.get(f"{BASE_URL}/health/llm", timeout=timeout)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException:
+        return None
