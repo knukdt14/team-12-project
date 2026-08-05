@@ -15,9 +15,9 @@ import requests
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").strip().rstrip("/")
 MODEL_NAME = os.getenv("OLLAMA_MODEL", "exaone3.5:2.4b").strip()
-REQUEST_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "300"))
-MAX_TOKENS = int(os.getenv("OLLAMA_MAX_TOKENS", "600"))
-NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
+REQUEST_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "120"))
+MAX_TOKENS = int(os.getenv("OLLAMA_MAX_TOKENS", "220"))
+NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
 
 print(f"[llm] provider=ollama url={OLLAMA_BASE_URL} model={MODEL_NAME!r}")
 

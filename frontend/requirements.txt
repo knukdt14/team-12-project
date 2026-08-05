@@ -8,7 +8,9 @@
 # 덕분에 torch / ultralytics / transformers 가 전부 빠지고
 # 이미지가 약 6GB -> 400MB대로 줄었습니다.
 
-streamlit>=1.60  # width= 파라미터(use_container_width 대체) 지원 버전
+streamlit==1.60.0  # width= 파라미터(use_container_width 대체) 지원 버전
+# Streamlit 1.60의 GZip middleware는 Starlette 1.4의 새 필수 인자와 호환되지 않음.
+starlette==1.3.1
 pandas>=2.0
 numpy>=1.24
 opencv-python-headless>=4.8  # 박스 그리기/리사이즈용. headless라 X11 불필요

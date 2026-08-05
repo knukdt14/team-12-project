@@ -22,7 +22,7 @@ VECTORSTORE_DIR = BASE_DIR / "backend" / "data" / "vectorstore"
 
 EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "jhgan/ko-sroberta-multitask")
 TOP_K = int(os.getenv("RAG_TOP_K", "4"))
-MAX_CONTEXT_CHARS = int(os.getenv("RAG_MAX_CONTEXT_CHARS", "6200"))
+MAX_CONTEXT_CHARS = int(os.getenv("RAG_MAX_CONTEXT_CHARS", "4200"))
 LEXICAL_MIN_SCORE = float(os.getenv("RAG_LEXICAL_MIN_SCORE", "1.5"))
 
 _vectorstore = None
