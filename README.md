@@ -75,15 +75,26 @@ data/
 
 ## 실행 순서
 
+앱은 `backend/`(FastAPI: 진단/견적/정비소·지도/AI상담)와 `frontend/`(Streamlit UI)로 분리되어 있습니다. 둘 다 띄워야 전체 기능이 동작합니다.
+
 ```bash
-# 1. 패키지 설치
-pip install -r requirements.txt
+# 1. 패키지 설치 (배포 모델: YOLO11n 16종, test mAP50 0.887)
+pip install -r backend/requirements.txt
+pip install -r frontend/requirements.txt
 
-# 2. 데모만 볼 경우 — data/ 없이 바로 실행 가능 (배포 모델: YOLO11n 16종, test mAP50 0.887)
-streamlit run app.py
+# 2. backend + frontend 한 번에 실행 (권장)
+chmod +x run_dev.sh   # 최초 1회
+./run_dev.sh
 
-# 3. 재학습하려면 먼저 data.zip / damage_type_crops.zip을 받아 풀어넣은 뒤 (항상 프로젝트 루트에서 실행)
-#    자세한 스크립트별 용도는 아래 "스크립트별 용도 및 재학습 방법" 참고
+# 또는 각자 다른 터미널에서 따로 실행
+cd backend && uvicorn main:app --reload --port 8000     # 터미널 1
+BACKEND_BASE_URL=http://127.0.0.1:8000 streamlit run frontend/app.py   # 터미널 2
+```
+
+재학습(모델 자체를 다시 학습)하려면 학습 전용 의존성을 따로 설치하세요 — data/ 없이는 실행할 수 없고, 자세한 내용은 아래 "스크립트별 용도 및 재학습 방법" 참고.
+
+```bash
+pip install -r requirements.txt   # 학습/분석 전용 (scripts/, analysis.ipynb)
 python scripts/train.py
 python scripts/train_damage_type.py
 jupyter notebook analysis.ipynb
@@ -91,40 +102,40 @@ jupyter notebook analysis.ipynb
 
 ## 카카오 지도 / 견적 API 실행
 
-"정비소 찾기"(카카오맵 연동), "예상 견적" 기능은 `estimate_api.py`(FastAPI)가 필요합니다. 두 가지 방법이 있습니다.
+"정비소 찾기"(카카오맵 연동), "예상 견적" 기능은 backend가 필요합니다. 두 가지 방법이 있습니다.
 
 ### 방법 1 — Render에 배포된 서버 사용 (권장, 키 필요 없음)
 
-`estimate_api.py`는 이미 Render에 배포되어 있습니다(`https://team-12-project.onrender.com`). 환경변수만 지정하면 카카오 API 키 없이 바로 사용 가능합니다.
+지도/견적 기능만 필요하면, 예전 단일 파일 서버 `estimate_api.py`가 이미 Render에 배포되어 있습니다(`https://team-12-project.onrender.com`). 환경변수만 지정하면 카카오 API 키 없이 바로 사용 가능합니다. **단, 이 서버엔 `/diagnose`·`/chat`이 없어서 AI 진단·상담은 로컬 backend가 필요합니다.**
 
 ```bash
 # PowerShell
-$env:ESTIMATE_API_BASE_URL="https://team-12-project.onrender.com"
-streamlit run app.py
+$env:BACKEND_BASE_URL="https://team-12-project.onrender.com"
+streamlit run frontend/app.py
 
 # bash
-export ESTIMATE_API_BASE_URL="https://team-12-project.onrender.com"
-streamlit run app.py
+export BACKEND_BASE_URL="https://team-12-project.onrender.com"
+streamlit run frontend/app.py
 ```
 
 환경변수를 지정하지 않으면 기본값(`http://127.0.0.1:8000`)을 사용합니다.
 
 > Render 무료 티어는 15분간 요청이 없으면 서버가 잠들어서, 첫 요청 응답이 30초~1분 정도 걸릴 수 있습니다.
 
-### 방법 2 — 로컬에서 estimate_api.py 직접 실행 (개발/디버깅용)
+### 방법 2 — 로컬에서 backend 직접 실행 (권장, 전체 기능)
 
-`estimate_api.py` 코드 자체를 수정하거나 로컬에서 바로 테스트하고 싶을 때 사용합니다. 이 경우 본인 명의 Kakao REST API 키가 필요합니다(Kakao Developers에서 무료 발급, `.env.example` 참고).
+진단·AI상담까지 전부 테스트하려면 로컬에서 `backend/`를 띄워야 합니다. 본인 명의 Kakao REST API 키가 필요합니다(Kakao Developers에서 무료 발급, `.env.example` 참고). AI상담 답변까지 받으려면 [Ollama](https://ollama.com)도 설치하고 모델을 받아두세요(`ollama pull exaone3.5:2.4b`).
 
 ```bash
 chmod +x run_dev.sh   # 최초 1회
 ./run_dev.sh
 ```
 
-`estimate_api.py`(포트 8000)를 백그라운드로 띄운 뒤 `streamlit run app.py`를 실행합니다. `Ctrl+C`로 둘 다 종료됩니다.
+`backend/`(포트 8000)를 백그라운드로 띄운 뒤 `streamlit run frontend/app.py`를 실행합니다. `Ctrl+C`로 둘 다 종료됩니다.
 
 ## 스크립트별 용도 및 재학습 방법
 
-이 프로젝트는 **서로 독립적인 두 모델**로 구성됩니다. `app.py`가 둘 다 사용하지만, 학습 파이프라인은 완전히 분리되어 있어서 **처음부터 다시 학습하려면 두 파이프라인을 각각 실행해야 합니다** — 한쪽만 돌리면 그 모델만 갱신됩니다.
+이 프로젝트는 **서로 독립적인 두 모델**로 구성됩니다. `backend/`가 둘 다 사용하지만, 학습 파이프라인은 완전히 분리되어 있어서 **처음부터 다시 학습하려면 두 파이프라인을 각각 실행해야 합니다** — 한쪽만 돌리면 그 모델만 갱신됩니다.
 
 ### 1단계: 부위 탐지 (YOLO)
 
@@ -155,11 +166,20 @@ python scripts/train.py
 python scripts/train_damage_type.py
 ```
 
-두 스크립트 다 실행해야 `app.py`가 "부위 + 손상 종류"를 모두 표시합니다. `train.py`만 돌리면 부위 탐지는 갱신되지만 손상 종류 분류기는 기존 것(`runs/damage_type_classifier/best.pt`)이 그대로 쓰입니다.
+두 스크립트 다 실행해야 `backend/`가 "부위 + 손상 종류"를 모두 표시합니다. `train.py`만 돌리면 부위 탐지는 갱신되지만 손상 종류 분류기는 기존 것(`runs/damage_type_classifier/best.pt`)이 그대로 쓰입니다.
 
 ## 프로젝트 구조
 ```
 car_defect_inspection/
+├── backend/                     # FastAPI 서버 (진단/견적/정비소·지도/AI상담)
+│   ├── main.py
+│   ├── routers/                    # diagnose, estimate, repair_shops, chat
+│   ├── services/                   # detector, estimator, rag, llm_client
+│   └── requirements.txt
+├── frontend/                    # Streamlit UI
+│   ├── app.py
+│   ├── utils/api_client.py         # backend 호출 전담
+│   └── requirements.txt
 ├── src/
 │   └── preprocessing.py         # OpenCV 시각화 보조
 ├── scripts/                     # 학습/데이터 처리 스크립트 (항상 프로젝트 루트에서 실행)
@@ -175,12 +195,11 @@ car_defect_inspection/
 │   ├── MODEL_COMPARISON.md          # YOLO11n vs YOLO26n 비교
 │   ├── DAMAGE_TYPE_CLASSIFIER.md    # 2단계 분류기 상세 문서
 │   ├── DEFECT_CLASSES.md            # 16개 탐지 클래스 정리
-│   ├── CHANGELOG.md                 # 개발 변경 이력
-│   └── Claude.md                    # Claude Code 작업 규칙
+│   └── CHANGELOG.md                 # 개발 변경 이력
 ├── data/                         # (미포함, 별도 다운로드) 병합·재분할된 학습 데이터
 ├── results/                      # 결과 보관용
 ├── runs/                         # 학습 결과 (best.pt, 그래프) — 배포 모델만 git에 포함
 ├── analysis.ipynb                # 불량률 분석
-├── app.py                        # Streamlit 데모 (1+2단계 통합)
-└── requirements.txt
+├── estimate_api.py               # 예전 단일 파일 서버 (Render 배포용, 지도/견적만 — backend/의 하위 호환)
+└── requirements.txt              # 학습/분석 전용 의존성 (앱 실행은 backend/·frontend/requirements.txt 참고)
 ```
