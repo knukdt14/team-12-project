@@ -4,21 +4,32 @@
 로드하지 않고, 이 모듈을 통해서만 backend를 호출한다. app.py는 UI/상태
 관리와 (backend 연결 실패 시) 로컬 폴백 로직만 담당한다.
 
-로컬 개발 기준 URL이며, 배포 시 BACKEND_BASE_URL 환경변수로 덮어쓸 수 있다.
+주소를 용도별로 둘로 분리한다 (둘 다 필요하면 동시에 씀, 하나만 필요하면 그것만):
+- DIAGNOSE_URL / CHAT_URL: 항상 로컬 backend(main.py). YOLO/RAG는 무거워서 Render
+  무료 티어(RAM 512MB)에 못 올라가므로 로컬에서만 실행 가능 — 카카오 키와 무관한
+  순수 컴퓨팅 제약이라 여기는 오버라이드해도 의미 없음.
+- ESTIMATE_URL / GEOCODE_URL / REPAIR_SHOPS_URL: 기본값이 Render 배포 서버
+  (main_light.py). 카카오 API 키가 거기 있어서, 로컬 backend를 켜고 있어도(진단용)
+  팀원이 자기 키를 따로 안 가져도 이 세 기능은 항상 됨.
+  로컬 repair_shops.py 자체를 테스트하고 싶을 때만 MAP_BACKEND_BASE_URL로 덮어쓴다.
 """
 import os
 
 import requests
 
-BASE_URL = os.environ.get(
-    "BACKEND_BASE_URL", os.environ.get("ESTIMATE_API_BASE_URL", "http://127.0.0.1:8000")
+DIAGNOSE_BASE_URL = os.environ.get("BACKEND_BASE_URL", "http://127.0.0.1:8000")
+
+MAP_BASE_URL = os.environ.get(
+    "MAP_BACKEND_BASE_URL",
+    os.environ.get("ESTIMATE_API_BASE_URL", "https://team-12-project.onrender.com"),
 )
 
-DIAGNOSE_URL = f"{BASE_URL}/diagnose"
-ESTIMATE_URL = f"{BASE_URL}/estimate"
-GEOCODE_URL = f"{BASE_URL}/geocode"
-REPAIR_SHOPS_URL = f"{BASE_URL}/repair-shops"
-CHAT_URL = f"{BASE_URL}/chat"
+DIAGNOSE_URL = f"{DIAGNOSE_BASE_URL}/diagnose"
+CHAT_URL = f"{DIAGNOSE_BASE_URL}/chat"
+
+ESTIMATE_URL = f"{MAP_BASE_URL}/estimate"
+GEOCODE_URL = f"{MAP_BASE_URL}/geocode"
+REPAIR_SHOPS_URL = f"{MAP_BASE_URL}/repair-shops"
 
 
 def call_diagnose_api(image_bytes, conf_threshold=0.3, filename="upload.jpg"):

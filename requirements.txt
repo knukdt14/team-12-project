@@ -12,14 +12,12 @@ requests>=2.31
 folium>=0.20
 streamlit-folium>=0.27
 
-# estimate_api.py(프로젝트 루트, Kakao 지도 연동) 실행에 필요
-fastapi>=0.115
-uvicorn[standard]>=0.30
+# AI 상담(RAGS.py, Qwen2.5-7B-Instruct) frontend/app.py가 시작할 때부터 바로 import함 — 필수
+transformers>=4.40
 python-dotenv>=1.0
 
-# AI 상담(RAGS.py, Qwen2.5-7B-Instruct) app.py가 시작할 때부터 바로 import함 — 필수
-transformers>=4.40
-
-# backend/main.py 쪽(공식 백엔드 스캐폴딩)은 backend/requirements.txt 참고
+# frontend/app.py, backend/main.py 실행에 필요한 나머지 패키지는
+# frontend/requirements.txt, backend/requirements.txt 참고 (이 파일은 scripts/, analysis.ipynb 등
+# 프로젝트 루트 스크립트 재현용 — fastapi/uvicorn 등 서버 실행용 패키지는 각 하위 폴더 참고)
 # 손상 복구 예상 이미지 생성(repair_inpaint.py)은 보류 중 — 필요 시 diffusers,
 # accelerate, safetensors, sentencepiece, protobuf 별도 설치(repair_inpaint.py 상단 안내 참고)

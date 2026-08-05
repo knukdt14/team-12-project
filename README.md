@@ -77,50 +77,54 @@ data/
 
 ```bash
 # 1. 패키지 설치
-pip install -r requirements.txt
+pip install -r frontend/requirements.txt -r backend/requirements.txt
 
 # 2. 데모만 볼 경우 — data/ 없이 바로 실행 가능 (배포 모델: YOLO11n 16종, test mAP50 0.887)
-streamlit run app.py
+#    backend(FastAPI)와 frontend(Streamlit)를 한 번에 띄움 — 자세한 내용은 아래
+#    "백엔드/프론트엔드 실행" 섹션 참고
+./run_dev.sh          # Git Bash / Mac / Linux
+run_dev.bat           # Windows cmd / PowerShell
 
 # 3. 재학습하려면 먼저 data.zip / damage_type_crops.zip을 받아 풀어넣은 뒤 (항상 프로젝트 루트에서 실행)
 #    자세한 스크립트별 용도는 아래 "스크립트별 용도 및 재학습 방법" 참고
+pip install -r requirements.txt
 python scripts/train.py
 python scripts/train_damage_type.py
 jupyter notebook analysis.ipynb
 ```
 
-## 카카오 지도 / 견적 API 실행
+## 백엔드/프론트엔드 실행
 
-"정비소 찾기"(카카오맵 연동), "예상 견적" 기능은 `estimate_api.py`(FastAPI)가 필요합니다. 두 가지 방법이 있습니다.
+`frontend/`(Streamlit)와 `backend/`(FastAPI)가 분리된 구조입니다. `frontend/utils/api_client.py`가 `BACKEND_BASE_URL`(없으면 `ESTIMATE_API_BASE_URL`) 환경변수가 가리키는 주소로 진단/견적/지도 API를 호출합니다.
 
-### 방법 1 — Render에 배포된 서버 사용 (권장, 키 필요 없음)
+### 방법 1 — 로컬에서 전부 실행 (권장, 진단까지 전부 됨)
 
-`estimate_api.py`는 이미 Render에 배포되어 있습니다(`https://team-12-project.onrender.com`). 환경변수만 지정하면 카카오 API 키 없이 바로 사용 가능합니다.
+```bash
+./run_dev.sh          # Git Bash / Mac / Linux
+run_dev.bat           # Windows cmd / PowerShell
+```
+
+`backend/main.py`(포트 8000, `/diagnose` `/estimate` `/geocode` `/repair-shops` `/chat` 전부 포함)를 백그라운드로 띄운 뒤 `frontend/app.py`를 실행합니다. `BACKEND_BASE_URL`을 로컬로 명시하기 때문에 `.env`의 Render 주소보다 우선 적용됩니다. `Ctrl+C`로 둘 다 종료됩니다.
+
+카카오맵 기능을 쓰려면 로컬 `.env`에 본인 명의 Kakao REST API 키가 필요합니다(Kakao Developers에서 무료 발급, `.env.example` 참고).
+
+### 방법 2 — Render에 배포된 경량 서버 사용 (진단 제외, 키 필요 없음)
+
+`backend/main_light.py`(`/estimate`, `/repair-shops`, `/geocode`만 포함 — `/diagnose`, `/chat`은 torch/langchain 등이 무거워서 무료 티어 RAM(512MB)에 안 맞아 제외됨)가 Render에 배포되어 있습니다(`https://team-12-project.onrender.com`). `run_dev` 없이 frontend만 단독 실행하면 이 주소로 자동 연결됩니다.
 
 ```bash
 # PowerShell
-$env:ESTIMATE_API_BASE_URL="https://team-12-project.onrender.com"
-streamlit run app.py
+$env:BACKEND_BASE_URL=""
+streamlit run frontend/app.py
 
 # bash
-export ESTIMATE_API_BASE_URL="https://team-12-project.onrender.com"
-streamlit run app.py
+unset BACKEND_BASE_URL
+streamlit run frontend/app.py
 ```
 
-환경변수를 지정하지 않으면 기본값(`http://127.0.0.1:8000`)을 사용합니다.
+`BACKEND_BASE_URL`이 비어있으면 `.env`의 `ESTIMATE_API_BASE_URL`(Render 주소)로 폴백합니다. **이 방법은 이미지 업로드 진단(`/diagnose`)이 안 됩니다** — 견적표/정비소 찾기만 필요할 때 씁니다.
 
 > Render 무료 티어는 15분간 요청이 없으면 서버가 잠들어서, 첫 요청 응답이 30초~1분 정도 걸릴 수 있습니다.
-
-### 방법 2 — 로컬에서 estimate_api.py 직접 실행 (개발/디버깅용)
-
-`estimate_api.py` 코드 자체를 수정하거나 로컬에서 바로 테스트하고 싶을 때 사용합니다. 이 경우 본인 명의 Kakao REST API 키가 필요합니다(Kakao Developers에서 무료 발급, `.env.example` 참고).
-
-```bash
-chmod +x run_dev.sh   # 최초 1회
-./run_dev.sh
-```
-
-`estimate_api.py`(포트 8000)를 백그라운드로 띄운 뒤 `streamlit run app.py`를 실행합니다. `Ctrl+C`로 둘 다 종료됩니다.
 
 ## 스크립트별 용도 및 재학습 방법
 
@@ -159,28 +163,45 @@ python scripts/train_damage_type.py
 
 ## 프로젝트 구조
 ```
-car_defect_inspection/
-├── src/
-│   └── preprocessing.py         # OpenCV 시각화 보조
-├── scripts/                     # 학습/데이터 처리 스크립트 (항상 프로젝트 루트에서 실행)
-│   ├── train.py                    # YOLO 학습 (1단계 부위 탐지)
-│   ├── augment.py                  # 클래스 불균형 보완용 이미지 증강
-│   ├── merge_datasets.py           # 외부 데이터셋 병합
-│   ├── resplit_dataset.py          # train/valid/test 층화 재분할
-│   ├── build_damage_type_crops.py  # CarDD에서 손상 종류 분류용 crop 데이터셋 생성 (2단계)
-│   ├── train_damage_type.py        # 손상 종류 분류기(ResNet18) 학습 (2단계)
-│   └── eval_damage_type.py         # 손상 종류 분류기 test셋 평가 (2단계)
-├── docs/                         # 문서
-│   ├── REVIEW.md                    # 코드 리뷰 및 수정 이력
-│   ├── MODEL_COMPARISON.md          # YOLO11n vs YOLO26n 비교
-│   ├── DAMAGE_TYPE_CLASSIFIER.md    # 2단계 분류기 상세 문서
-│   ├── DEFECT_CLASSES.md            # 16개 탐지 클래스 정리
-│   ├── CHANGELOG.md                 # 개발 변경 이력
-│   └── Claude.md                    # Claude Code 작업 규칙
-├── data/                         # (미포함, 별도 다운로드) 병합·재분할된 학습 데이터
-├── results/                      # 결과 보관용
-├── runs/                         # 학습 결과 (best.pt, 그래프) — 배포 모델만 git에 포함
-├── analysis.ipynb                # 불량률 분석
-├── app.py                        # Streamlit 데모 (1+2단계 통합)
-└── requirements.txt
+team-12-project/
+├── frontend/                     # Streamlit 프론트엔드
+│   ├── app.py                       # 메인 데모 UI (진단/견적/지도/AI 상담)
+│   ├── requirements.txt
+│   ├── Dockerfile
+│   └── utils/api_client.py          # backend 호출 전담 모듈
+├── backend/                      # FastAPI 백엔드
+│   ├── main.py                      # 전체 라우터(diagnose/estimate/repair_shops/chat) — 로컬 개발용
+│   ├── main_light.py                # estimate/repair_shops만 포함한 경량 버전 — Render 배포용
+│   ├── requirements.txt / requirements-light.txt
+│   ├── routers/                     # diagnose.py, estimate.py, repair_shops.py, chat.py
+│   ├── services/                    # detector.py(YOLO+ResNet18), estimator.py(단가표), rag.py, llm_client.py
+│   └── data/단가표.json
+├── ai/                            # RAG 지식베이스
+│   ├── docs/                        # 정비 지식 markdown 문서
+│   └── build_vectorstore.py         # FAISS 인덱스 빌드 스크립트
+├── RAGS.py                        # AI 상담(Qwen2.5-7B-Instruct) — frontend가 직접 로드
+├── repair_inpaint.py              # AI 복원 이미지 생성 (FLUX.1-Kontext-dev, 보류 중)
+├── src/preprocessing.py           # OpenCV 시각화 보조
+├── scripts/                       # 학습/데이터 처리 스크립트 (항상 프로젝트 루트에서 실행)
+│   ├── train.py                      # YOLO 학습 (1단계 부위 탐지)
+│   ├── augment.py                    # 클래스 불균형 보완용 이미지 증강
+│   ├── merge_datasets.py             # 외부 데이터셋 병합
+│   ├── resplit_dataset.py            # train/valid/test 층화 재분할
+│   ├── build_damage_type_crops.py    # CarDD에서 손상 종류 분류용 crop 데이터셋 생성 (2단계)
+│   ├── train_damage_type.py          # 손상 종류 분류기(ResNet18) 학습 (2단계)
+│   └── eval_damage_type.py           # 손상 종류 분류기 test셋 평가 (2단계)
+├── docs/                          # 문서
+│   ├── REVIEW.md                     # 코드 리뷰 및 수정 이력
+│   ├── MODEL_COMPARISON.md           # YOLO11n vs YOLO26n 비교
+│   ├── DAMAGE_TYPE_CLASSIFIER.md     # 2단계 분류기 상세 문서
+│   ├── DEFECT_CLASSES.md             # 16개 탐지 클래스 정리
+│   ├── CHANGELOG.md                  # 개발 변경 이력
+│   └── Claude.md                     # Claude Code 작업 규칙
+├── data/                          # (미포함, 별도 다운로드) 병합·재분할된 학습 데이터
+├── results/                       # 결과 보관용
+├── runs/                          # 학습 결과 (best.pt, 그래프) — 배포 모델만 git에 포함
+├── analysis.ipynb                 # 불량률 분석
+├── run_dev.sh / run_dev.bat       # 로컬에서 backend+frontend 한 번에 실행
+├── .env.example                   # 환경변수 템플릿
+└── requirements.txt                # scripts/, analysis.ipynb 재현용 (서버 실행용은 frontend·backend 하위 참고)
 ```
