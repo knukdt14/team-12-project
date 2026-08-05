@@ -18,17 +18,13 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
-import torch
 
 import folium
 from streamlit_folium import st_folium
 
 from PIL import Image
-from torchvision import transforms
-from torchvision.models import resnet18
-from ultralytics import YOLO
 
-from src.preprocessing import draw_results, resize_for_display
+from src.preprocessing import draw_detections, resize_for_display
 from repair_inpaint import (
     RepairConfig,
     generate_repaired_image_full,
@@ -41,13 +37,6 @@ from repair_inpaint import (
 # ---------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
 
-MODEL_PATH = BASE_DIR / "runs/detect/runs/train_20260804_1124/weights/best.pt"  # YOLO11n, 16종(Bodypanel-Dent 제거) 재학습, test mAP50 0.887
-FALLBACK = "yolo11n.pt"
-
-DAMAGE_TYPE_MODEL_PATH = BASE_DIR / "runs/damage_type_classifier/best.pt"
-DAMAGE_TYPE_IMG_SIZE = 224
-DAMAGE_TYPE_PAD_RATIO = 0.15
-
 PRICE_TABLE_PATH = BASE_DIR / "단가표.json"
 LOGO_PATH = BASE_DIR / "ajin_logo.png"
 
@@ -59,6 +48,9 @@ DIAGNOSIS_LOG_PATH = BASE_DIR / "diagnosis_log.csv"
 REPAIRED_SAMPLE_PATH = BASE_DIR / "assets/bokgo.jpg"
 
 # 로컬 개발 기준. Docker에서는 환경변수로 바꾸는 것을 권장.
+# YOLO/ResNet18 추론은 더 이상 이 파일 안에서 직접 하지 않고, backend(/diagnose)를
+# 호출한다 — 프론트/백엔드 분리 작업으로 변경됨 (기존에는 이 파일이 모델을 직접 로드했음).
+DIAGNOSE_API_URL = "http://127.0.0.1:8000/diagnose"
 ESTIMATE_API_URL = "http://127.0.0.1:8000/estimate"
 
 
@@ -188,35 +180,8 @@ st.markdown(
 
 
 # ---------------------------------------------------------
-# 모델 로드
+# 모델 로드 (AI 복원 이미지 생성용 — 파손 탐지/분류는 backend가 담당)
 # ---------------------------------------------------------
-@st.cache_resource
-def load_model():
-    path = MODEL_PATH if MODEL_PATH.exists() else FALLBACK
-    return YOLO(path), path
-
-
-@st.cache_resource
-def load_damage_type_model():
-    if not DAMAGE_TYPE_MODEL_PATH.exists():
-        return None, None
-
-    ckpt = torch.load(
-        DAMAGE_TYPE_MODEL_PATH,
-        map_location="cpu",
-        weights_only=False,
-    )
-    class_names = ckpt["class_names"]
-
-    clf = resnet18(weights=None)
-    clf.fc = torch.nn.Linear(clf.fc.in_features, len(class_names))
-    clf.load_state_dict(ckpt["model_state"])
-    clf.eval()
-
-    return clf, class_names
-
-
-
 @st.cache_resource(show_spinner=False)
 def load_repair_pipeline():
     """복원 버튼을 처음 눌렀을 때만 생성형 인페인팅 모델을 로드.
@@ -229,43 +194,27 @@ def load_repair_pipeline():
     return load_inpaint_pipeline(low_vram=True, sequential_offload=True)
 
 
-DAMAGE_TYPE_TF = transforms.Compose(
-    [
-        transforms.Resize((DAMAGE_TYPE_IMG_SIZE, DAMAGE_TYPE_IMG_SIZE)),
-        transforms.ToTensor(),
-        transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225],
-        ),
-    ]
-)
+# ---------------------------------------------------------
+# 진단 관련 (backend /diagnose 호출)
+# ---------------------------------------------------------
+def call_diagnose_api(image_bytes, conf_threshold=0.3, filename="upload.jpg"):
+    """backend의 /diagnose를 호출해 탐지 결과 리스트를 받아온다.
 
-
-def classify_damage_type_raw(img_bgr, box_xyxy, clf, class_names):
-    """손상 종류 분류기의 raw class name을 반환."""
-    h, w = img_bgr.shape[:2]
-    x1, y1, x2, y2 = box_xyxy
-    bw, bh = x2 - x1, y2 - y1
-
-    x1p = max(0, int(x1 - bw * DAMAGE_TYPE_PAD_RATIO))
-    y1p = max(0, int(y1 - bh * DAMAGE_TYPE_PAD_RATIO))
-    x2p = min(w, int(x2 + bw * DAMAGE_TYPE_PAD_RATIO))
-    y2p = min(h, int(y2 + bh * DAMAGE_TYPE_PAD_RATIO))
-
-    if x2p - x1p < 5 or y2p - y1p < 5:
-        return None
-
-    crop_rgb = cv2.cvtColor(
-        img_bgr[y1p:y2p, x1p:x2p],
-        cv2.COLOR_BGR2RGB,
-    )
-
-    tensor = DAMAGE_TYPE_TF(Image.fromarray(crop_rgb)).unsqueeze(0)
-
-    with torch.no_grad():
-        pred = clf(tensor).argmax(1).item()
-
-    return class_names[pred]
+    성공 시 (results, None), 실패 시 (None, 에러메시지) 튜플을 반환한다.
+    results의 각 원소는 {"part", "part_en", "damage_type", "damage_type_en",
+    "severity", "confidence", "bbox"} 형태의 dict (schemas.Detection과 동일).
+    """
+    try:
+        response = requests.post(
+            DIAGNOSE_API_URL,
+            files={"file": (filename, image_bytes, "image/jpeg")},
+            data={"conf_threshold": conf_threshold},
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()["results"], None
+    except requests.RequestException as e:
+        return None, str(e)
 
 
 # ---------------------------------------------------------
@@ -483,13 +432,6 @@ def build_excel_bytes(df):
 
 
 # ---------------------------------------------------------
-# 모델 로드
-# ---------------------------------------------------------
-model, used_path = load_model()
-damage_type_clf, damage_type_classes = load_damage_type_model()
-
-
-# ---------------------------------------------------------
 # Sidebar 메뉴 + 설정
 # ---------------------------------------------------------
 with st.sidebar:
@@ -524,12 +466,7 @@ with st.sidebar:
         0.1, 0.9, 0.3, 0.05,
     )
 
-    if damage_type_clf is not None:
-        st.success("손상 종류 분류기 활성화")
-    else:
-        st.warning("손상 종류 분류기 미탑재")
-
-    st.caption("YOLO + ResNet 기반 2단계 진단")
+    st.caption("AI 진단: backend API 연동 (YOLO + ResNet 기반 2단계 진단)")
     st.caption("견적은 룰베이스 단가표를 사용합니다.")
 
     st.divider()
@@ -602,14 +539,22 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
             st.stop()
 
         with st.spinner("AI가 차량 외관 손상을 분석하고 있습니다..."):
-            results = model.predict(
-                img_bgr,
-                conf=conf_threshold,
-                verbose=False,
+            api_results, diagnose_error = call_diagnose_api(
+                uploaded.getvalue(),
+                conf_threshold=conf_threshold,
+                filename=uploaded.name,
             )
 
-        vis = draw_results(img_bgr, results)
-        boxes = results[0].boxes
+        if diagnose_error:
+            st.error(
+                "AI 진단 backend에 연결할 수 없습니다. "
+                "`backend/main.py`가 실행 중인지 확인해주세요. "
+                f"(오류: {diagnose_error})"
+            )
+            st.stop()
+
+        vis = draw_detections(img_bgr, api_results)
+        boxes = api_results  # backend가 돌려준 dict 리스트 (부위/손상종류/신뢰도/bbox 포함)
 
         st.markdown("### 🚘 AI 차량 진단 과정")
 
@@ -644,9 +589,9 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
                 # 라벨 표시용으로 가장 신뢰도가 높은 박스는 계속 참조
                 top_box_obj = max(
                     boxes,
-                    key=lambda b: float(b.conf[0]),
+                    key=lambda b: b["confidence"],
                 )
-                top_raw_class = results[0].names[int(top_box_obj.cls[0])]
+                top_raw_class = top_box_obj["part_en"]
                 top_part_label = KOREAN_NAMES.get(
                     top_raw_class,
                     top_raw_class,
@@ -655,9 +600,9 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
                 # 복원 대상은 conf 0.3 이상인 박스 전부 (같은 패널의 여러
                 # 손상 박스를 하나의 마스크로 합쳐서 inpainting하기 위함)
                 damage_boxes = [
-                    tuple(map(float, b.xyxy[0]))
+                    tuple(map(float, b["bbox"]))
                     for b in boxes
-                    if float(b.conf[0]) >= 0.3
+                    if b["confidence"] >= 0.3
                 ]
 
                 # 동일 업로드 이미지에서는 생성 결과 유지
@@ -718,9 +663,9 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
                                 # 검출된 클래스명 전체를 영문 그대로 프롬프트에
                                 # 전달해 "무엇이 손상됐는지"를 명확히 지시
                                 detected_classes = sorted({
-                                    results[0].names[int(b.cls[0])]
+                                    b["part_en"]
                                     for b in boxes
-                                    if float(b.conf[0]) >= 0.3
+                                    if b["confidence"] >= 0.3
                                 })
                                 damaged_parts = ", ".join(detected_classes)
 
@@ -779,28 +724,16 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
             rows = []
 
             for b in boxes:
-                raw_yolo_class = results[0].names[int(b.cls[0])]
-                part_label = KOREAN_NAMES.get(raw_yolo_class, raw_yolo_class)
+                # backend /diagnose가 부위·손상종류를 이미 다 계산해서 돌려주므로,
+                # 여기서는 단가표 코드(front_bumper 등)로 변환만 하면 된다.
+                raw_yolo_class = b["part_en"]
+                part_label = b["part"]  # 이미 한글 라벨
                 part_code = PART_CODE_MAP.get(raw_yolo_class)
-                confidence = float(b.conf[0])
+                confidence = b["confidence"]
 
-                raw_damage = None
-                damage_code = None
-                damage_label = "-"
-
-                if damage_type_clf is not None:
-                    raw_damage = classify_damage_type_raw(
-                        img_bgr,
-                        tuple(map(float, b.xyxy[0])),
-                        damage_type_clf,
-                        damage_type_classes,
-                    )
-
-                    damage_code = DAMAGE_CODE_MAP.get(raw_damage)
-                    damage_label = DAMAGE_TYPE_KOREAN.get(
-                        raw_damage,
-                        raw_damage or "-"
-                    )
+                raw_damage = b["damage_type_en"] if b["damage_type_en"] not in (None, "-") else None
+                damage_code = DAMAGE_CODE_MAP.get(raw_damage) if raw_damage else None
+                damage_label = b["damage_type"]  # 이미 한글 라벨 (없으면 "-")
 
                 rows.append(
                     {
