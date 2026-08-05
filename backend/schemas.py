@@ -4,7 +4,7 @@ API 명세는 프로젝트 루트 README.md "4. API 명세" 참고.
 지금은 스캐폴딩 단계라 값 검증 위주로만 정의하고, 실제 추론/계산 로직은
 services/ 쪽에 연결되는 대로 여기 필드도 맞춰 조정합니다.
 """
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel
 
@@ -23,21 +23,60 @@ class DiagnoseResponse(BaseModel):
     results: List[Detection]
 
 
-class EstimateItem(BaseModel):
-    part: str
-    method: str
-    min_cost: int
-    max_cost: int
-
-
 class EstimateRequest(BaseModel):
-    results: List[Detection]
+    """단일 손상 건 기준 견적 요청 (팀원 estimate_api.py 구조와 통일).
+
+    part: 단가표.json items 키(예: "front_bumper") 또는 YOLO part_en(예:
+    "front-bumper-dent") 둘 다 허용 — services/estimator.py에서 자동 매핑 시도.
+    /diagnose가 여러 건을 탐지하면, 프론트엔드가 건별로 이 엔드포인트를 반복 호출한다.
+    """
+
+    part: str
+    damage_type: str
+    severity: str
 
 
 class EstimateResponse(BaseModel):
-    items: List[EstimateItem]
-    total: int
-    report: str  # LLM이 생성한 요약 문장 (services/llm_client.py 연결 전까지는 더미 텍스트)
+    """팀원 estimate_api.py와 동일한 필드 구성. 조회 실패 시 success=False +
+    message만 채워지고 나머지는 None."""
+
+    success: bool
+    part: Optional[str] = None
+    part_label: Optional[str] = None
+    damage_type: Optional[str] = None
+    severity: Optional[str] = None
+    repair_method: Optional[str] = None
+    min_cost: Optional[int] = None
+    max_cost: Optional[int] = None
+    source: Optional[str] = None
+    note: Optional[str] = None
+    disclaimer: Optional[str] = None
+    message: Optional[str] = None
+
+
+class RepairShop(BaseModel):
+    name: str
+    address: str
+    phone: str
+    distance: str
+    lat: float
+    lng: float
+    place_url: str
+
+
+class RepairShopsResponse(BaseModel):
+    success: bool
+    count: Optional[int] = None
+    shops: Optional[List[RepairShop]] = None
+    message: Optional[str] = None
+
+
+class GeocodeResponse(BaseModel):
+    success: bool
+    address: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    message: Optional[str] = None
 
 
 class ChatRequest(BaseModel):
