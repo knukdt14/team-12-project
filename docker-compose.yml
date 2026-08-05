@@ -1,0 +1,148 @@
+# docker-compose.yml — CarDoc 멀티 컨테이너 구성 (Integration Engineer 담당)
+#
+#   프로젝트 루트에서:
+#     docker compose up --build      # 이미지가 없으면 빌드하고 전체 기동
+#     docker compose down            # 정지 + 컨테이너 제거
+#     docker compose down -v         # 볼륨(모델 캐시)까지 삭제하고 완전 초기화
+#     docker compose logs -f backend # 로그 확인
+#
+#   접속:
+#     Streamlit UI   http://localhost:8501
+#     FastAPI docs   http://localhost:8000/docs
+#
+#   GitHub Codespaces에서도 동일합니다. Codespace를 열고 터미널에서
+#   `docker compose up --build` 하면 PORTS 탭에 8501/8000이 자동으로 뜹니다.
+#   .env 파일은 없어도 됩니다(아래 ${VAR:-기본값} 보간 참고).
+#   KAKAO_REST_API_KEY만 정비소 검색에 필요하고, 나머지는 키 없이 동작합니다.
+#
+# 핵심 원칙 1 — 컨테이너끼리는 localhost가 아니라 "서비스 이름"으로 통신합니다.
+#   frontend → backend : http://backend:8000
+#   backend  → llm     : http://llm:11434
+#   컨테이너 안의 localhost는 자기 자신이라 상대 컨테이너에 절대 닿지 않습니다.
+#
+# 핵심 원칙 2 — 빌드 컨텍스트는 둘 다 "저장소 루트"입니다.
+#   ai/, src/, repair_inpaint.py, 단가표.json 이 루트에 있는 공용 모듈이라,
+#   컨텍스트를 backend/ 나 frontend/ 로 좁히면 COPY가 실패합니다.
+
+services:
+  # ------------------------------------------------------------------
+  # Backend — FastAPI (YOLO 부위 탐지 + ResNet18 손상 분류 + 견적 + RAG)
+  # ------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: cardoc-backend:1.0
+    ports:
+      - "8000:8000"
+    volumes:
+      # 모델 가중치는 이미지에 굽지 않고 read-only로 마운트합니다.
+      # 재학습해도 이미지를 다시 빌드할 필요가 없습니다.
+      - ./runs:/app/runs:ro
+      # 임베딩 모델 캐시를 볼륨에 두면 컨테이너를 지워도 다시 받지 않습니다.
+      - hf_cache:/app/.cache/huggingface
+    environment:
+      # 비어 있으면 "정비소 찾기"만 안내 문구로 빠지고 나머지는 정상 동작합니다.
+      - KAKAO_REST_API_KEY=${KAKAO_REST_API_KEY:-}
+      # services/llm_client.py가 읽는 변수명 그대로 맞춥니다.
+      - OLLAMA_BASE_URL=http://llm:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-exaone3.5:2.4b}
+      - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-300}
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      # LLM은 모델 다운로드가 느리므로 "떴다"까지만 기다립니다.
+      # pull이 안 끝났으면 챗봇이 폴백 응답으로 처리합니다.
+      llm:
+        condition: service_started
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------
+  # Frontend — Streamlit UI
+  # ------------------------------------------------------------------
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    image: cardoc-frontend:1.0
+    ports:
+      - "8501:8501"
+    volumes:
+      # 진단 이력 CSV를 컨테이너가 죽어도 남기기 위한 볼륨
+      - cardoc_logs:/app/logs
+    environment:
+      # ★ frontend/backend 분리의 핵심. 하드코딩 localhost 금지.
+      #   utils/api_client.py가 이 변수를 읽습니다.
+      - BACKEND_BASE_URL=http://backend:8000
+      - LOG_DIR=/app/logs
+      # AI 복원 예상 이미지(SD1.5 Inpainting)는 CPU에서 한 장에 수 분 걸립니다.
+      # 클라우드 시연에서는 꺼두고, GPU가 있는 로컬에서만 1로 켜세요.
+      - ENABLE_REPAIR_PREVIEW=${ENABLE_REPAIR_PREVIEW:-0}
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      backend:
+        # backend는 torch/YOLO 로딩에 시간이 걸립니다.
+        # healthcheck를 통과할 때까지 기다려야 첫 요청이 실패하지 않습니다.
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------
+  # LLM — Ollama (RAG 챗봇 응답 생성)
+  # ------------------------------------------------------------------
+  # 컨테이너가 뜰 때 모델을 자동으로 내려받습니다(최초 1회, 이후 볼륨 캐시).
+  # 기본 모델 exaone3.5:2.4b(약 1.6GB)는 LG AI연구원의 한국어 특화 모델로,
+  # Codespaces 4코어/16GB에서 CPU 추론이 가능합니다.
+  #
+  # ※ 이미지 빌드가 끝난 뒤에 pull이 시작되므로, 첫 기동 후 2~3분간은
+  #   챗봇이 폴백 응답을 냅니다. 진행 상황은 UI 사이드바의 LLM 상태 배지
+  #   또는 `docker compose logs -f llm` 에서 확인하세요.
+  llm:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama # 모델 캐시 (재시작마다 재다운로드 방지)
+    environment:
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-exaone3.5:2.4b}
+    # 공식 ollama 이미지는 모델을 자동으로 받지 않습니다.
+    # 서버를 띄운 뒤 pull까지 해주는 스크립트로 entrypoint를 덮어씁니다.
+    # $$ 는 compose 변수 치환을 막고 셸에 $ 그대로 넘기기 위한 이스케이프입니다.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        ollama serve &
+        until ollama list >/dev/null 2>&1; do sleep 1; done
+
+        # Windows 편집기가 남긴 CR(\r)과 앞뒤 공백을 제거.
+        # 이게 섞이면 "exaone3.5:2.4b\r" 같은 이름으로 pull을 시도해 404가 납니다.
+        MODEL=$$(printf '%s' "$${OLLAMA_MODEL}" | tr -d '\r' | tr -d '[:space:]')
+        echo "==================================================="
+        echo "[llm] 사용할 모델: '$${MODEL}'"
+        echo "==================================================="
+
+        if ollama list | grep -q "^$${MODEL}[[:space:]]"; then
+          echo "[llm] 이미 받아둔 모델입니다. pull을 건너뜁니다."
+        else
+          echo "[llm] 다운로드를 시작합니다. 크기에 따라 수 분 걸릴 수 있습니다."
+          if ollama pull "$${MODEL}"; then
+            echo "[llm] 다운로드 완료: $${MODEL}"
+          else
+            echo "[llm] !! pull 실패 — 모델 이름을 확인하세요 (https://ollama.com/library)"
+            echo "[llm] !! 챗봇은 폴백 응답(검색 결과만)으로 동작합니다."
+          fi
+        fi
+
+        echo "[llm] 현재 보유 모델:"
+        ollama list
+        wait
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  cardoc_logs: # 진단 이력 CSV
+  ollama_data: # Ollama 모델 캐시
+  hf_cache: # HuggingFace 임베딩 모델 캐시

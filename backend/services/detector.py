@@ -33,6 +33,46 @@ DAMAGE_TYPE_KOREAN = {
     "tire flat": "타이어 펑크",
 }
 
+# 부위별로 물리적으로 가능한 손상 종류.
+#
+# 왜 필요한가:
+#   1단계 YOLO(부위)와 2단계 ResNet(손상 종류)이 서로를 모른 채 독립적으로
+#   예측하기 때문에, "전방 범퍼 + 램프 파손" 같은 불가능한 조합이 나온다.
+#   이런 조합은 단가표에 없으므로 견적이 실패하고, 챗봇은 금액을 인용하지
+#   못해 "정비소에 방문하세요"만 반복하는 무의미한 답변을 하게 된다.
+#
+# 어떻게 고치는가:
+#   분류기의 출력 logit에서 해당 부위에 불가능한 클래스를 -inf로 만든 뒤
+#   argmax를 취한다(제약 조건부 예측). 정확도가 떨어지는 게 아니라, 애초에
+#   틀릴 수밖에 없는 선택지를 후보에서 빼는 것이라 오히려 올라간다.
+#
+# 값의 근거: data/단가표.json items의 각 부위가 정의한 손상 종류와 일치시킨다.
+#   단가표에 없는 부위(루프/필러/사이드스텝 등)는 패널로 간주해 scratch/dent만 허용.
+PART_VALID_DAMAGES = {
+    # 범퍼·패널 — 긁힘/찌그러짐/균열
+    "front-bumper-dent": {"scratch", "dent", "crack"},
+    "rear-bumper-dent": {"scratch", "dent", "crack"},
+    "doorouter-dent": {"scratch", "dent", "crack"},
+    "fender-dent": {"scratch", "dent"},
+    "bonnet-dent": {"scratch", "dent"},
+    "boot-dent": {"scratch", "dent"},
+    "quaterpanel-dent": {"scratch", "dent"},
+    "roof-dent": {"scratch", "dent"},
+    "pillar-dent": {"scratch", "dent"},
+    "RunningBoard-Dent": {"scratch", "dent"},
+    # 구버전 17종 모델 클래스. 현재 배포 모델(16종)에는 없지만 표는 맞춰둔다.
+    "Bodypanel-Dent": {"scratch", "dent"},
+    # 유리 — 깨짐/금
+    "Front-Windscreen-Damage": {"crack", "glass shatter"},
+    "Rear-windscreen-Damage": {"crack", "glass shatter"},
+    # 램프 — 파손/금
+    "Headlight-Damage": {"crack", "lamp broken"},
+    "Taillight-Damage": {"crack", "lamp broken"},
+    "Signlight-Damage": {"crack", "lamp broken"},
+    # 사이드미러 — 커버 긁힘 / 미러 깨짐
+    "Sidemirror-Damage": {"scratch", "crack"},
+}
+
 KOREAN_NAMES = {
     "Front-Windscreen-Damage": "전면 유리",
     "Headlight-Damage": "전조등",
@@ -112,8 +152,13 @@ def _compute_severity(bbox, img_w, img_h):
     return "severe"
 
 
-def _classify_damage_type(img_bgr, box_xyxy):
+def _classify_damage_type(img_bgr, box_xyxy, part_en=None):
     """박스 영역을 여백 포함해 crop한 뒤 손상 종류를 분류해 원본 영문 클래스명 반환.
+
+    part_en이 주어지면 PART_VALID_DAMAGES로 후보를 제한한다.
+    예) 전방 범퍼에서는 scratch/dent/crack 중에서만 고른다 — 램프 파손이
+        1순위로 나와도 물리적으로 불가능하므로 후보에서 제외하고 2순위를 택한다.
+        이 제약이 없으면 단가표 조회가 실패해 견적·챗봇 답변이 모두 무너진다.
 
     한글 표시는 호출부에서 DAMAGE_TYPE_KOREAN으로 변환한다 (part_en/damage_type_en을
     단가표.json 조회에 그대로 쓰기 위해 원본 영문값을 유지).
@@ -131,8 +176,20 @@ def _classify_damage_type(img_bgr, box_xyxy):
     crop_rgb = cv2.cvtColor(img_bgr[y1p:y2p, x1p:x2p], cv2.COLOR_BGR2RGB)
     tensor = DAMAGE_TYPE_TF(Image.fromarray(crop_rgb)).unsqueeze(0)
     with torch.no_grad():
-        pred = _damage_type_clf(tensor).argmax(1).item()
-    return _damage_type_classes[pred]
+        logits = _damage_type_clf(tensor)[0]
+
+    allowed = PART_VALID_DAMAGES.get(part_en) if part_en else None
+    if allowed:
+        # 허용되지 않은 클래스의 점수를 -inf로 만들어 argmax 후보에서 제외.
+        # 학습된 클래스 중 허용 목록에 하나도 없으면(매핑 실수 등) 제약을 포기하고
+        # 원래 예측을 그대로 쓴다 — 전부 -inf가 되어 엉뚱한 값이 나오는 것을 방지.
+        mask = torch.tensor(
+            [c in allowed for c in _damage_type_classes], dtype=torch.bool
+        )
+        if mask.any():
+            logits = logits.masked_fill(~mask, float("-inf"))
+
+    return _damage_type_classes[int(logits.argmax().item())]
 
 
 def detect(image_bytes: bytes, conf_threshold: float = 0.3):
@@ -166,7 +223,7 @@ def detect(image_bytes: bytes, conf_threshold: float = 0.3):
 
         damage_type_en = "-"
         if _damage_type_clf is not None:
-            damage_type_en = _classify_damage_type(img_bgr, tuple(bbox))
+            damage_type_en = _classify_damage_type(img_bgr, tuple(bbox), part_en)
         damage_type = DAMAGE_TYPE_KOREAN.get(damage_type_en, damage_type_en)
 
         detections.append({

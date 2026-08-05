@@ -1,0 +1,39 @@
+# 빌드 컨텍스트가 저장소 루트라, 무거운 산출물을 여기서 한 번에 제외합니다.
+# (backend/frontend Dockerfile 둘 다 이 파일을 씁니다)
+
+# 파이썬 캐시
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+venv/
+.venv/
+
+# 시크릿
+.env
+
+# 모델 가중치 — 이미지에 굽지 않고 compose에서 ./runs 를 볼륨 마운트합니다.
+# 여기 두면 빌드 컨텍스트 전송에만 48MB가 낭비됩니다.
+runs/
+
+# 학습 데이터셋 (수 GB)
+data/
+cardd_raw/
+damage_type_crops/
+data.zip
+
+# 분석/학습 스크립트는 서비스 실행에 불필요
+analysis.ipynb
+*.ipynb
+scripts/
+
+# 빌드 시 새로 생성하므로 로컬 산출물은 제외
+backend/data/vectorstore/
+**/.cache/huggingface/
+
+# 로그/기타
+*.log
+diagnosis_log.csv
+results/
+.git/
+.DS_Store
+Thumbs.db

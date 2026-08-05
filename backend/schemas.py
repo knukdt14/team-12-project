@@ -82,7 +82,14 @@ class GeocodeResponse(BaseModel):
 class ChatRequest(BaseModel):
     session_id: str
     message: str
+    # 이번 세션의 진단·견적 요약. 챗봇이 금액을 지어내지 않고 이 값을 인용하도록
+    # 프롬프트에 그대로 넣는다 (단가표.json llm_guardrails.rule1).
+    #
+    # 세션 저장소를 따로 두지 않고 프론트가 매 요청에 실어 보내는 방식이다.
+    # backend를 무상태로 유지할 수 있어 컨테이너를 여러 개로 늘려도 문제가 없다.
+    diagnosis_summary: str = ""
 
 
 class ChatResponse(BaseModel):
     answer: str
+    used_llm: bool = True  # False면 LLM 없이 검색 결과만으로 만든 폴백 응답
