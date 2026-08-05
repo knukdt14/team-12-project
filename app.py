@@ -20,6 +20,9 @@ import pandas as pd
 import requests
 import streamlit as st
 import torch
+from dotenv import load_dotenv
+
+load_dotenv()
 
 import folium
 from streamlit_folium import st_folium
@@ -50,7 +53,7 @@ DAMAGE_TYPE_IMG_SIZE = 224
 DAMAGE_TYPE_PAD_RATIO = 0.15
 
 PRICE_TABLE_PATH = BASE_DIR / "단가표.json"
-LOGO_PATH = BASE_DIR / "ajin_logo.png"
+LOGO_PATH = BASE_DIR / "docs/ajin_logo.png"
 
 # 대시보드 집계용 진단 이력 누적 로그 (견적 생성 시마다 1행씩 append)
 DIAGNOSIS_LOG_PATH = BASE_DIR / "diagnosis_log.csv"
