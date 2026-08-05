@@ -16,10 +16,15 @@ streamlit-folium>=0.27
 torch>=2.0
 torchvision>=0.15
 
+# AI 상담(RAGS.py, Qwen2.5-7B-Instruct)이 이 프로세스 안에서 직접 로드됨 —
+# app.py가 시작할 때부터 바로 import하므로 필수. backend /chat이 완성되면
+# call_chat_api()로 교체하고 이 의존성들은 제거할 예정 (별도 과제).
+transformers>=4.40
+accelerate>=0.30
+bitsandbytes>=0.43  # load_consult_llm()의 4bit 양자화 로드(low_vram=True)에 필요
+
 # repair_inpaint.py 상단 안내 참고 — 필요 시 설치
 # diffusers
-# transformers
-# accelerate
 # safetensors
 # sentencepiece
 # protobuf

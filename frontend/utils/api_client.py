@@ -10,7 +10,9 @@ import os
 
 import requests
 
-BASE_URL = os.environ.get("BACKEND_BASE_URL", "http://127.0.0.1:8000")
+BASE_URL = os.environ.get(
+    "BACKEND_BASE_URL", os.environ.get("ESTIMATE_API_BASE_URL", "http://127.0.0.1:8000")
+)
 
 DIAGNOSE_URL = f"{BASE_URL}/diagnose"
 ESTIMATE_URL = f"{BASE_URL}/estimate"

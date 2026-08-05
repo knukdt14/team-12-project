@@ -1,0 +1,7 @@
+# estimate_api.py 전용(Kakao 지도/견적 API) — Render 등 경량 배포용.
+# 루트 requirements.txt(torch/ultralytics/streamlit 등 포함)는 이 서비스엔 불필요.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+requests>=2.31
+python-dotenv>=1.0
+pydantic>=2.0
