@@ -1,7 +1,7 @@
 """
 Streamlit Frontend — AI 차량 파손 진단 + 예상 수리비 + 상담 UI
-실행:
-    streamlit run app.py
+실행 (반드시 프로젝트 루트에서):
+    streamlit run frontend/app.py
 
 백엔드가 켜져 있으면 /estimate API를 호출하고,
 꺼져 있으면 단가표.json을 직접 읽는 fallback 로직으로 동작합니다.
@@ -10,6 +10,7 @@ Streamlit Frontend — AI 차량 파손 진단 + 예상 수리비 + 상담 UI
 import base64
 import io
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -24,34 +25,38 @@ from streamlit_folium import st_folium
 
 from PIL import Image
 
+# frontend/app.py는 저장소 루트 밖(frontend/)으로 이동했지만, src/preprocessing.py와
+# repair_inpaint.py는 아직 루트에 있는 공용 모듈이라 루트를 sys.path에 추가해야 import된다.
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 from src.preprocessing import draw_detections, resize_for_display
 from repair_inpaint import (
     RepairConfig,
     generate_repaired_image_full,
     load_inpaint_pipeline,
 )
+from utils.api_client import (
+    call_diagnose_api,
+    call_estimate_api,
+    call_geocode_api,
+    call_repair_shops_api,
+)
 
 
 # ---------------------------------------------------------
-# 기본 경로
+# 기본 경로 (단가표.json, 로고, 로그 등은 여전히 저장소 루트에 있음)
 # ---------------------------------------------------------
-BASE_DIR = Path(__file__).resolve().parent
-
-PRICE_TABLE_PATH = BASE_DIR / "단가표.json"
-LOGO_PATH = BASE_DIR / "ajin_logo.png"
+PRICE_TABLE_PATH = ROOT_DIR / "단가표.json"
+LOGO_PATH = ROOT_DIR / "ajin_logo.png"
 
 # 대시보드 집계용 진단 이력 누적 로그 (견적 생성 시마다 1행씩 append)
-DIAGNOSIS_LOG_PATH = BASE_DIR / "diagnosis_log.csv"
+DIAGNOSIS_LOG_PATH = ROOT_DIR / "diagnosis_log.csv"
 
 # 교수님 요청용 "복원 예상" 이미지.
 # 파일이 없으면 안내 박스만 표시합니다.
-REPAIRED_SAMPLE_PATH = BASE_DIR / "assets/bokgo.jpg"
-
-# 로컬 개발 기준. Docker에서는 환경변수로 바꾸는 것을 권장.
-# YOLO/ResNet18 추론은 더 이상 이 파일 안에서 직접 하지 않고, backend(/diagnose)를
-# 호출한다 — 프론트/백엔드 분리 작업으로 변경됨 (기존에는 이 파일이 모델을 직접 로드했음).
-DIAGNOSE_API_URL = "http://127.0.0.1:8000/diagnose"
-ESTIMATE_API_URL = "http://127.0.0.1:8000/estimate"
+REPAIRED_SAMPLE_PATH = ROOT_DIR / "assets/bokgo.jpg"
 
 
 # ---------------------------------------------------------
@@ -195,28 +200,9 @@ def load_repair_pipeline():
 
 
 # ---------------------------------------------------------
-# 진단 관련 (backend /diagnose 호출)
-# ---------------------------------------------------------
-def call_diagnose_api(image_bytes, conf_threshold=0.3, filename="upload.jpg"):
-    """backend의 /diagnose를 호출해 탐지 결과 리스트를 받아온다.
-
-    성공 시 (results, None), 실패 시 (None, 에러메시지) 튜플을 반환한다.
-    results의 각 원소는 {"part", "part_en", "damage_type", "damage_type_en",
-    "severity", "confidence", "bbox"} 형태의 dict (schemas.Detection과 동일).
-    """
-    try:
-        response = requests.post(
-            DIAGNOSE_API_URL,
-            files={"file": (filename, image_bytes, "image/jpeg")},
-            data={"conf_threshold": conf_threshold},
-            timeout=30,
-        )
-        response.raise_for_status()
-        return response.json()["results"], None
-    except requests.RequestException as e:
-        return None, str(e)
-
-
+# 진단 관련: call_diagnose_api()는 utils/api_client.py로 이동함
+# (backend /diagnose 호출 로직 — 프론트/백엔드 분리 원칙에 따라 HTTP 통신은
+# api_client 모듈에만 두고, app.py는 UI/상태 관리에 집중)
 # ---------------------------------------------------------
 # 견적 관련
 # ---------------------------------------------------------
@@ -269,20 +255,8 @@ def get_repair_estimate(part, damage_type, severity):
     1) FastAPI /estimate 호출
     2) 연결 실패 시 단가표.json 직접 조회
     """
-    payload = {
-        "part": part,
-        "damage_type": damage_type,
-        "severity": severity,
-    }
-
     try:
-        response = requests.post(
-            ESTIMATE_API_URL,
-            json=payload,
-            timeout=3,
-        )
-        response.raise_for_status()
-        result = response.json()
+        result = call_estimate_api(part, damage_type, severity, timeout=3)
         result["via"] = "api"
         return result
 
@@ -1053,14 +1027,7 @@ if menu in ["🏠 홈", "📍 정비소 찾기"]:
             st.warning("현재 위치를 입력해주세요.")
         else:
             try:
-                geo_response = requests.get(
-                    "http://127.0.0.1:8000/geocode",
-                    params={"address": address},
-                    timeout=10,
-                )
-
-                geo_response.raise_for_status()
-                geo_result = geo_response.json()
+                geo_result = call_geocode_api(address)
 
                 if not geo_result.get("success"):
                     st.error(
@@ -1074,19 +1041,11 @@ if menu in ["🏠 홈", "📍 정비소 찾기"]:
                     latitude = geo_result["lat"]
                     longitude = geo_result["lng"]
 
-                    shop_response = requests.get(
-                        "http://127.0.0.1:8000/repair-shops",
-                        params={
-                            "x": longitude,
-                            "y": latitude,
-                            "radius": radius_km * 1000,
-                            "query": "자동차 정비소",
-                        },
-                        timeout=10,
+                    shop_result = call_repair_shops_api(
+                        x=longitude,
+                        y=latitude,
+                        radius=radius_km * 1000,
                     )
-
-                    shop_response.raise_for_status()
-                    shop_result = shop_response.json()
 
                     if not shop_result.get("success"):
                         st.error(
@@ -1106,7 +1065,7 @@ if menu in ["🏠 홈", "📍 정비소 찾기"]:
             except requests.ConnectionError:
                 st.error(
                     "FastAPI 서버에 연결할 수 없습니다. "
-                    "estimate_api.py가 실행 중인지 확인해주세요."
+                    "backend(uvicorn main:app)가 실행 중인지 확인해주세요."
                 )
 
             except requests.RequestException as e:
