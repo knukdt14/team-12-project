@@ -45,6 +45,9 @@ results/*
 .DS_Store
 Thumbs.db
 
+# 로컬 진단 테스트 로그
+diagnosis_log.csv
+
 # 사용된 데이터 zip파일
 data.zip
 
