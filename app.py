@@ -38,6 +38,10 @@ from repair_inpaint import (
     generate_repaired_image_full,
     load_inpaint_pipeline,
 )
+from RAGS import (
+    generate_consult_answer,
+    load_consult_model,
+)
 
 
 # ---------------------------------------------------------
@@ -53,7 +57,7 @@ DAMAGE_TYPE_IMG_SIZE = 224
 DAMAGE_TYPE_PAD_RATIO = 0.15
 
 PRICE_TABLE_PATH = BASE_DIR / "단가표.json"
-LOGO_PATH = BASE_DIR / "docs/ajin_logo.png"
+LOGO_PATH = BASE_DIR / "./docs/ajin_logo.png"
 
 # 대시보드 집계용 진단 이력 누적 로그 (견적 생성 시마다 1행씩 append)
 DIAGNOSIS_LOG_PATH = BASE_DIR / "diagnosis_log.csv"
@@ -233,6 +237,16 @@ def load_repair_pipeline():
     VRAM을 나눠 쓸 때 OOM 위험이 커집니다).
     """
     return load_inpaint_pipeline(low_vram=True, sequential_offload=True)
+
+
+@st.cache_resource(show_spinner=False)
+def load_consult_llm():
+    """AI 상담 탭을 처음 열었을 때만 Qwen2.5-7B-Instruct(4bit)를 로드.
+
+    FLUX Kontext와 마찬가지로 실제 채팅 전까지는 로드하지 않고,
+    st.cache_resource로 한 번 로드한 뒤 세션 내내 재사용합니다.
+    """
+    return load_consult_model(low_vram=True)
 
 
 DAMAGE_TYPE_TF = transforms.Compose(
@@ -501,7 +515,7 @@ damage_type_clf, damage_type_classes = load_damage_type_model()
 with st.sidebar:
     st.markdown("""
     <div style="padding: 6px 0 18px 0;">
-        <div style="font-size:26px;font-weight:800;">🚘 CarDoc AI</div>
+        <div style="font-size:26px;font-weight:800;">🚘 AutoCarCare AI</div>
         <div style="font-size:13px;color:#6B7280;margin-top:4px;">
             AI Vehicle Care Service
         </div>
@@ -737,8 +751,8 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
                                     damaged_parts=damaged_parts,
                                     config=RepairConfig(
                                             mask_blur_radius=15,
-                                            target_size=1024,
-                                            steps=28,
+                                            target_size=512,
+                                            steps=18,
                                             guidance_scale=2.5,
                                             true_cfg_scale=1.0,
                                             low_vram=True,
@@ -1328,8 +1342,8 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
     st.markdown("### 💬 AI 수리 상담")
 
     st.caption(
-        "현재는 RAG API 연결 전입니다. "
-        "진단·견적 결과를 기반으로 임시 응답을 표시합니다."
+        "진단·견적 결과를 참고해 Qwen2.5-7B-Instruct(로컬)가 답변합니다. "
+        "실제 수리 여부·비용을 확정하는 답변이 아니니 참고용으로만 봐주세요."
     )
 
     diagnosis = st.session_state.get("diagnosis")
@@ -1357,6 +1371,9 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
     )
 
     if question:
+        # 이번 질문을 프롬프트에 넣기 전의 대화 이력(과거 턴만)
+        history = list(st.session_state.messages)
+
         st.session_state.messages.append(
             {"role": "user", "content": question}
         )
@@ -1364,34 +1381,26 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
         with st.chat_message("user"):
             st.markdown(question)
 
-        if (
-            diagnosis
-            and not diagnosis.get("normal")
-            and estimate
-        ):
-            primary = diagnosis["primary"]
-            severity_ko = st.session_state.get(
-                "severity_ko",
-                "중간",
-            )
-
-            answer = (
-                f"현재 진단 결과는 **{estimate['part_label']} / "
-                f"{primary['damage_label']} / {severity_ko}**입니다. "
-                f"단가표 기준 예상 수리 방식은 "
-                f"**{estimate['repair_method']}**, "
-                f"예상 비용은 "
-                f"**{estimate['min_cost']:,}~{estimate['max_cost']:,}원**입니다. "
-                "정확한 교환 여부는 실제 정비소의 현물 점검이 필요합니다."
-            )
-
-        else:
-            answer = (
-                "현재는 RAG 상담 기능 연결 전입니다. "
-                "먼저 차량 진단과 예상 견적을 진행해주세요."
-            )
-
         with st.chat_message("assistant"):
+            with st.spinner("답변을 생성하는 중..."):
+                try:
+                    model, tokenizer = load_consult_llm()
+                    answer = generate_consult_answer(
+                        model,
+                        tokenizer,
+                        question=question,
+                        diagnosis=diagnosis,
+                        estimate=estimate,
+                        history=history,
+                    )
+                except Exception as e:
+                    answer = (
+                        "죄송합니다, 상담 모델을 불러오거나 답변을 생성하는 중 "
+                        f"오류가 발생했습니다. ({type(e).__name__}: {e})\n\n"
+                        "GPU 메모리가 부족하거나 모델 로드에 실패했을 수 있습니다. "
+                        "잠시 후 다시 시도해주세요."
+                    )
+
             st.markdown(answer)
 
         st.session_state.messages.append(
