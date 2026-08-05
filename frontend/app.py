@@ -1,7 +1,7 @@
 """
 Streamlit Frontend — AI 차량 파손 진단 + 예상 수리비 + 상담 UI
-실행:
-    streamlit run app.py
+실행 (반드시 프로젝트 루트에서):
+    streamlit run frontend/app.py
 
 백엔드가 켜져 있으면 /estimate API를 호출하고,
 꺼져 있으면 단가표.json을 직접 읽는 fallback 로직으로 동작합니다.
@@ -10,7 +10,7 @@ Streamlit Frontend — AI 차량 파손 진단 + 예상 수리비 + 상담 UI
 import base64
 import io
 import json
-import os
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -19,25 +19,32 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
-import torch
-from dotenv import load_dotenv
-
-load_dotenv()
 
 import folium
 from streamlit_folium import st_folium
 
 from PIL import Image
-from torchvision import transforms
-from torchvision.models import resnet18
-from ultralytics import YOLO
 
-from src.preprocessing import draw_results, resize_for_display
+# frontend/app.py는 저장소 루트 밖(frontend/)으로 이동했지만, src/preprocessing.py와
+# repair_inpaint.py는 아직 루트에 있는 공용 모듈이라 루트를 sys.path에 추가해야 import된다.
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from src.preprocessing import draw_detections, resize_for_display
 from repair_inpaint import (
     RepairConfig,
     generate_repaired_image_full,
     load_inpaint_pipeline,
 )
+from utils.api_client import (
+    call_diagnose_api,
+    call_estimate_api,
+    call_geocode_api,
+    call_repair_shops_api,
+)
+# AI 상담은 당분간 backend /chat 대신 RAGS.py(Qwen2.5-7B 직접 로드) 방식을 유지함
+# — backend /chat이 진단·견적 컨텍스트/멀티턴을 지원하게 되면 교체 예정 (별도 과제).
 from RAGS import (
     generate_consult_answer,
     load_consult_model,
@@ -45,31 +52,17 @@ from RAGS import (
 
 
 # ---------------------------------------------------------
-# 기본 경로
+# 기본 경로 (단가표.json, 로고, 로그 등은 여전히 저장소 루트에 있음)
 # ---------------------------------------------------------
-BASE_DIR = Path(__file__).resolve().parent
-
-MODEL_PATH = BASE_DIR / "runs/detect/runs/train_20260804_1124/weights/best.pt"  # YOLO11n, 16종(Bodypanel-Dent 제거) 재학습, test mAP50 0.887
-FALLBACK = "yolo11n.pt"
-
-DAMAGE_TYPE_MODEL_PATH = BASE_DIR / "runs/damage_type_classifier/best.pt"
-DAMAGE_TYPE_IMG_SIZE = 224
-DAMAGE_TYPE_PAD_RATIO = 0.15
-
-PRICE_TABLE_PATH = BASE_DIR / "단가표.json"
-LOGO_PATH = BASE_DIR / "./docs/ajin_logo.png"
+PRICE_TABLE_PATH = ROOT_DIR / "단가표.json"
+LOGO_PATH = ROOT_DIR / "docs/ajin_logo.png"
 
 # 대시보드 집계용 진단 이력 누적 로그 (견적 생성 시마다 1행씩 append)
-DIAGNOSIS_LOG_PATH = BASE_DIR / "diagnosis_log.csv"
+DIAGNOSIS_LOG_PATH = ROOT_DIR / "diagnosis_log.csv"
 
 # 교수님 요청용 "복원 예상" 이미지.
 # 파일이 없으면 안내 박스만 표시합니다.
-REPAIRED_SAMPLE_PATH = BASE_DIR / "assets/bokgo.jpg"
-
-# estimate_api.py(카카오맵 연동 포함) 서버 주소. 환경변수 ESTIMATE_API_BASE_URL로
-# 배포된 주소(예: Render)를 지정할 수 있음 — 없으면 로컬 개발용 기본값 사용.
-ESTIMATE_API_BASE_URL = os.getenv("ESTIMATE_API_BASE_URL", "http://127.0.0.1:8000")
-ESTIMATE_API_URL = f"{ESTIMATE_API_BASE_URL}/estimate"
+REPAIRED_SAMPLE_PATH = ROOT_DIR / "assets/bokgo.jpg"
 
 
 # ---------------------------------------------------------
@@ -198,35 +191,8 @@ st.markdown(
 
 
 # ---------------------------------------------------------
-# 모델 로드
+# 모델 로드 (AI 복원 이미지 생성용 — 파손 탐지/분류는 backend가 담당)
 # ---------------------------------------------------------
-@st.cache_resource
-def load_model():
-    path = MODEL_PATH if MODEL_PATH.exists() else FALLBACK
-    return YOLO(path), path
-
-
-@st.cache_resource
-def load_damage_type_model():
-    if not DAMAGE_TYPE_MODEL_PATH.exists():
-        return None, None
-
-    ckpt = torch.load(
-        DAMAGE_TYPE_MODEL_PATH,
-        map_location="cpu",
-        weights_only=False,
-    )
-    class_names = ckpt["class_names"]
-
-    clf = resnet18(weights=None)
-    clf.fc = torch.nn.Linear(clf.fc.in_features, len(class_names))
-    clf.load_state_dict(ckpt["model_state"])
-    clf.eval()
-
-    return clf, class_names
-
-
-
 @st.cache_resource(show_spinner=False)
 def load_repair_pipeline():
     """복원 버튼을 처음 눌렀을 때만 생성형 인페인팅 모델을 로드.
@@ -239,6 +205,18 @@ def load_repair_pipeline():
     return load_inpaint_pipeline(low_vram=True, sequential_offload=True)
 
 
+# ---------------------------------------------------------
+# 진단 관련: call_diagnose_api()는 utils/api_client.py로 이동함
+# (backend /diagnose 호출 로직 — 프론트/백엔드 분리 원칙에 따라 HTTP 통신은
+# api_client 모듈에만 두고, app.py는 UI/상태 관리에 집중)
+# ---------------------------------------------------------
+
+
+# ---------------------------------------------------------
+# AI 상담 모델 로드 (RAGS.py — Qwen2.5-7B-Instruct 직접 로드 방식)
+# TODO: backend /chat이 진단·견적 컨텍스트 반영 + 멀티턴을 지원하게 되면
+# call_chat_api()로 교체하고 이 직접 로드 방식은 제거할 것.
+# ---------------------------------------------------------
 @st.cache_resource(show_spinner=False)
 def load_consult_llm():
     """AI 상담 탭을 처음 열었을 때만 Qwen2.5-7B-Instruct(4bit)를 로드.
@@ -247,45 +225,6 @@ def load_consult_llm():
     st.cache_resource로 한 번 로드한 뒤 세션 내내 재사용합니다.
     """
     return load_consult_model(low_vram=True)
-
-
-DAMAGE_TYPE_TF = transforms.Compose(
-    [
-        transforms.Resize((DAMAGE_TYPE_IMG_SIZE, DAMAGE_TYPE_IMG_SIZE)),
-        transforms.ToTensor(),
-        transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225],
-        ),
-    ]
-)
-
-
-def classify_damage_type_raw(img_bgr, box_xyxy, clf, class_names):
-    """손상 종류 분류기의 raw class name을 반환."""
-    h, w = img_bgr.shape[:2]
-    x1, y1, x2, y2 = box_xyxy
-    bw, bh = x2 - x1, y2 - y1
-
-    x1p = max(0, int(x1 - bw * DAMAGE_TYPE_PAD_RATIO))
-    y1p = max(0, int(y1 - bh * DAMAGE_TYPE_PAD_RATIO))
-    x2p = min(w, int(x2 + bw * DAMAGE_TYPE_PAD_RATIO))
-    y2p = min(h, int(y2 + bh * DAMAGE_TYPE_PAD_RATIO))
-
-    if x2p - x1p < 5 or y2p - y1p < 5:
-        return None
-
-    crop_rgb = cv2.cvtColor(
-        img_bgr[y1p:y2p, x1p:x2p],
-        cv2.COLOR_BGR2RGB,
-    )
-
-    tensor = DAMAGE_TYPE_TF(Image.fromarray(crop_rgb)).unsqueeze(0)
-
-    with torch.no_grad():
-        pred = clf(tensor).argmax(1).item()
-
-    return class_names[pred]
 
 
 # ---------------------------------------------------------
@@ -340,20 +279,8 @@ def get_repair_estimate(part, damage_type, severity):
     1) FastAPI /estimate 호출
     2) 연결 실패 시 단가표.json 직접 조회
     """
-    payload = {
-        "part": part,
-        "damage_type": damage_type,
-        "severity": severity,
-    }
-
     try:
-        response = requests.post(
-            ESTIMATE_API_URL,
-            json=payload,
-            timeout=3,
-        )
-        response.raise_for_status()
-        result = response.json()
+        result = call_estimate_api(part, damage_type, severity, timeout=3)
         result["via"] = "api"
         return result
 
@@ -503,13 +430,6 @@ def build_excel_bytes(df):
 
 
 # ---------------------------------------------------------
-# 모델 로드
-# ---------------------------------------------------------
-model, used_path = load_model()
-damage_type_clf, damage_type_classes = load_damage_type_model()
-
-
-# ---------------------------------------------------------
 # Sidebar 메뉴 + 설정
 # ---------------------------------------------------------
 with st.sidebar:
@@ -544,12 +464,7 @@ with st.sidebar:
         0.1, 0.9, 0.3, 0.05,
     )
 
-    if damage_type_clf is not None:
-        st.success("손상 종류 분류기 활성화")
-    else:
-        st.warning("손상 종류 분류기 미탑재")
-
-    st.caption("YOLO + ResNet 기반 2단계 진단")
+    st.caption("AI 진단: backend API 연동 (YOLO + ResNet 기반 2단계 진단)")
     st.caption("견적은 룰베이스 단가표를 사용합니다.")
 
     st.divider()
@@ -622,14 +537,22 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
             st.stop()
 
         with st.spinner("AI가 차량 외관 손상을 분석하고 있습니다..."):
-            results = model.predict(
-                img_bgr,
-                conf=conf_threshold,
-                verbose=False,
+            api_results, diagnose_error = call_diagnose_api(
+                uploaded.getvalue(),
+                conf_threshold=conf_threshold,
+                filename=uploaded.name,
             )
 
-        vis = draw_results(img_bgr, results)
-        boxes = results[0].boxes
+        if diagnose_error:
+            st.error(
+                "AI 진단 backend에 연결할 수 없습니다. "
+                "`backend/main.py`가 실행 중인지 확인해주세요. "
+                f"(오류: {diagnose_error})"
+            )
+            st.stop()
+
+        vis = draw_detections(img_bgr, api_results)
+        boxes = api_results  # backend가 돌려준 dict 리스트 (부위/손상종류/신뢰도/bbox 포함)
 
         st.markdown("### 🚘 AI 차량 진단 과정")
 
@@ -664,9 +587,9 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
                 # 라벨 표시용으로 가장 신뢰도가 높은 박스는 계속 참조
                 top_box_obj = max(
                     boxes,
-                    key=lambda b: float(b.conf[0]),
+                    key=lambda b: b["confidence"],
                 )
-                top_raw_class = results[0].names[int(top_box_obj.cls[0])]
+                top_raw_class = top_box_obj["part_en"]
                 top_part_label = KOREAN_NAMES.get(
                     top_raw_class,
                     top_raw_class,
@@ -675,9 +598,9 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
                 # 복원 대상은 conf 0.3 이상인 박스 전부 (같은 패널의 여러
                 # 손상 박스를 하나의 마스크로 합쳐서 inpainting하기 위함)
                 damage_boxes = [
-                    tuple(map(float, b.xyxy[0]))
+                    tuple(map(float, b["bbox"]))
                     for b in boxes
-                    if float(b.conf[0]) >= 0.3
+                    if b["confidence"] >= 0.3
                 ]
 
                 # 동일 업로드 이미지에서는 생성 결과 유지
@@ -738,9 +661,9 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
                                 # 검출된 클래스명 전체를 영문 그대로 프롬프트에
                                 # 전달해 "무엇이 손상됐는지"를 명확히 지시
                                 detected_classes = sorted({
-                                    results[0].names[int(b.cls[0])]
+                                    b["part_en"]
                                     for b in boxes
-                                    if float(b.conf[0]) >= 0.3
+                                    if b["confidence"] >= 0.3
                                 })
                                 damaged_parts = ", ".join(detected_classes)
 
@@ -799,28 +722,16 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
             rows = []
 
             for b in boxes:
-                raw_yolo_class = results[0].names[int(b.cls[0])]
-                part_label = KOREAN_NAMES.get(raw_yolo_class, raw_yolo_class)
+                # backend /diagnose가 부위·손상종류를 이미 다 계산해서 돌려주므로,
+                # 여기서는 단가표 코드(front_bumper 등)로 변환만 하면 된다.
+                raw_yolo_class = b["part_en"]
+                part_label = b["part"]  # 이미 한글 라벨
                 part_code = PART_CODE_MAP.get(raw_yolo_class)
-                confidence = float(b.conf[0])
+                confidence = b["confidence"]
 
-                raw_damage = None
-                damage_code = None
-                damage_label = "-"
-
-                if damage_type_clf is not None:
-                    raw_damage = classify_damage_type_raw(
-                        img_bgr,
-                        tuple(map(float, b.xyxy[0])),
-                        damage_type_clf,
-                        damage_type_classes,
-                    )
-
-                    damage_code = DAMAGE_CODE_MAP.get(raw_damage)
-                    damage_label = DAMAGE_TYPE_KOREAN.get(
-                        raw_damage,
-                        raw_damage or "-"
-                    )
+                raw_damage = b["damage_type_en"] if b["damage_type_en"] not in (None, "-") else None
+                damage_code = DAMAGE_CODE_MAP.get(raw_damage) if raw_damage else None
+                damage_label = b["damage_type"]  # 이미 한글 라벨 (없으면 "-")
 
                 rows.append(
                     {
@@ -1140,14 +1051,7 @@ if menu in ["🏠 홈", "📍 정비소 찾기"]:
             st.warning("현재 위치를 입력해주세요.")
         else:
             try:
-                geo_response = requests.get(
-                    f"{ESTIMATE_API_BASE_URL}/geocode",
-                    params={"address": address},
-                    timeout=10,
-                )
-
-                geo_response.raise_for_status()
-                geo_result = geo_response.json()
+                geo_result = call_geocode_api(address)
 
                 if not geo_result.get("success"):
                     st.error(
@@ -1161,19 +1065,11 @@ if menu in ["🏠 홈", "📍 정비소 찾기"]:
                     latitude = geo_result["lat"]
                     longitude = geo_result["lng"]
 
-                    shop_response = requests.get(
-                        f"{ESTIMATE_API_BASE_URL}/repair-shops",
-                        params={
-                            "x": longitude,
-                            "y": latitude,
-                            "radius": radius_km * 1000,
-                            "query": "자동차 정비소",
-                        },
-                        timeout=10,
+                    shop_result = call_repair_shops_api(
+                        x=longitude,
+                        y=latitude,
+                        radius=radius_km * 1000,
                     )
-
-                    shop_response.raise_for_status()
-                    shop_result = shop_response.json()
 
                     if not shop_result.get("success"):
                         st.error(
@@ -1193,7 +1089,7 @@ if menu in ["🏠 홈", "📍 정비소 찾기"]:
             except requests.ConnectionError:
                 st.error(
                     "FastAPI 서버에 연결할 수 없습니다. "
-                    "estimate_api.py가 실행 중인지 확인해주세요."
+                    "backend(uvicorn main:app)가 실행 중인지 확인해주세요."
                 )
 
             except requests.RequestException as e:
