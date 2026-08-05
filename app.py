@@ -10,6 +10,7 @@ Streamlit Frontend — AI 차량 파손 진단 + 예상 수리비 + 상담 UI
 import base64
 import io
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -58,8 +59,10 @@ DIAGNOSIS_LOG_PATH = BASE_DIR / "diagnosis_log.csv"
 # 파일이 없으면 안내 박스만 표시합니다.
 REPAIRED_SAMPLE_PATH = BASE_DIR / "assets/bokgo.jpg"
 
-# 로컬 개발 기준. Docker에서는 환경변수로 바꾸는 것을 권장.
-ESTIMATE_API_URL = "http://127.0.0.1:8000/estimate"
+# estimate_api.py(카카오맵 연동 포함) 서버 주소. 환경변수 ESTIMATE_API_BASE_URL로
+# 배포된 주소(예: Render)를 지정할 수 있음 — 없으면 로컬 개발용 기본값 사용.
+ESTIMATE_API_BASE_URL = os.getenv("ESTIMATE_API_BASE_URL", "http://127.0.0.1:8000")
+ESTIMATE_API_URL = f"{ESTIMATE_API_BASE_URL}/estimate"
 
 
 # ---------------------------------------------------------
@@ -1121,7 +1124,7 @@ if menu in ["🏠 홈", "📍 정비소 찾기"]:
         else:
             try:
                 geo_response = requests.get(
-                    "http://127.0.0.1:8000/geocode",
+                    f"{ESTIMATE_API_BASE_URL}/geocode",
                     params={"address": address},
                     timeout=10,
                 )
@@ -1142,7 +1145,7 @@ if menu in ["🏠 홈", "📍 정비소 찾기"]:
                     longitude = geo_result["lng"]
 
                     shop_response = requests.get(
-                        "http://127.0.0.1:8000/repair-shops",
+                        f"{ESTIMATE_API_BASE_URL}/repair-shops",
                         params={
                             "x": longitude,
                             "y": latitude,

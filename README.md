@@ -89,6 +89,39 @@ python scripts/train_damage_type.py
 jupyter notebook analysis.ipynb
 ```
 
+## 카카오 지도 / 견적 API 실행
+
+"정비소 찾기"(카카오맵 연동), "예상 견적" 기능은 `estimate_api.py`(FastAPI)가 필요합니다. 두 가지 방법이 있습니다.
+
+### 방법 1 — Render에 배포된 서버 사용 (권장, 키 필요 없음)
+
+`estimate_api.py`는 이미 Render에 배포되어 있습니다(`https://team-12-project.onrender.com`). 환경변수만 지정하면 카카오 API 키 없이 바로 사용 가능합니다.
+
+```bash
+# PowerShell
+$env:ESTIMATE_API_BASE_URL="https://team-12-project.onrender.com"
+streamlit run app.py
+
+# bash
+export ESTIMATE_API_BASE_URL="https://team-12-project.onrender.com"
+streamlit run app.py
+```
+
+환경변수를 지정하지 않으면 기본값(`http://127.0.0.1:8000`)을 사용합니다.
+
+> Render 무료 티어는 15분간 요청이 없으면 서버가 잠들어서, 첫 요청 응답이 30초~1분 정도 걸릴 수 있습니다.
+
+### 방법 2 — 로컬에서 estimate_api.py 직접 실행 (개발/디버깅용)
+
+`estimate_api.py` 코드 자체를 수정하거나 로컬에서 바로 테스트하고 싶을 때 사용합니다. 이 경우 본인 명의 Kakao REST API 키가 필요합니다(Kakao Developers에서 무료 발급, `.env.example` 참고).
+
+```bash
+chmod +x run_dev.sh   # 최초 1회
+./run_dev.sh
+```
+
+`estimate_api.py`(포트 8000)를 백그라운드로 띄운 뒤 `streamlit run app.py`를 실행합니다. `Ctrl+C`로 둘 다 종료됩니다.
+
 ## 스크립트별 용도 및 재학습 방법
 
 이 프로젝트는 **서로 독립적인 두 모델**로 구성됩니다. `app.py`가 둘 다 사용하지만, 학습 파이프라인은 완전히 분리되어 있어서 **처음부터 다시 학습하려면 두 파이프라인을 각각 실행해야 합니다** — 한쪽만 돌리면 그 모델만 갱신됩니다.
