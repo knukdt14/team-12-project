@@ -48,6 +48,9 @@ results/*
 .DS_Store
 Thumbs.db
 
+# 앱 실행 중 자동 생성되는 로컬 진단 기록 (사람마다 값이 달라 커밋 대상 아님)
+diagnosis_log.csv
+
 # 사용된 데이터 zip파일
 data.zip
 
