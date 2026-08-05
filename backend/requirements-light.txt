@@ -1,0 +1,7 @@
+# main_light.py 전용(견적 + 카카오맵만) — Render 등 저용량 무료 호스팅용.
+# torch/ultralytics/langchain 등은 diagnose/chat 라우터에서만 쓰여서 여기선 불필요.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.0
+requests>=2.31
+python-dotenv>=1.0
