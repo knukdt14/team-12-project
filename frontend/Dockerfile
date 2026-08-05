@@ -1,6 +1,6 @@
 # frontend/Dockerfile — Streamlit UI 이미지
 #
-#   빌드 컨텍스트는 "저장소 루트"입니다. app.py가 루트의 src/, repair_inpaint.py,
+#   빌드 컨텍스트는 "저장소 루트"입니다. app.py가 루트의 src/와
 #   단가표.json 을 참조하므로 frontend/ 로 좁히면 COPY가 실패합니다.
 #     docker build -f frontend/Dockerfile -t cardoc-frontend .
 #   보통은 루트에서 `docker compose up --build` 로 backend와 함께 실행합니다.
@@ -34,7 +34,6 @@ RUN pip install --no-cache-dir -r frontend/requirements.txt
 
 # 루트의 공용 모듈/데이터 + frontend 코드
 COPY src/ src/
-COPY repair_inpaint.py .
 COPY 단가표.json .
 COPY docs/ docs/
 COPY frontend/ frontend/

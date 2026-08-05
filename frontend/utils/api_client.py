@@ -4,32 +4,42 @@
 로드하지 않고, 이 모듈을 통해서만 backend를 호출한다. app.py는 UI/상태
 관리와 (backend 연결 실패 시) 로컬 폴백 로직만 담당한다.
 
-주소를 용도별로 둘로 분리한다 (둘 다 필요하면 동시에 씀, 하나만 필요하면 그것만):
-- DIAGNOSE_URL / CHAT_URL: 항상 로컬 backend(main.py). YOLO/RAG는 무거워서 Render
-  무료 티어(RAM 512MB)에 못 올라가므로 로컬에서만 실행 가능 — 카카오 키와 무관한
-  순수 컴퓨팅 제약이라 여기는 오버라이드해도 의미 없음.
-- ESTIMATE_URL / GEOCODE_URL / REPAIR_SHOPS_URL: 기본값이 Render 배포 서버
-  (main_light.py). 카카오 API 키가 거기 있어서, 로컬 backend를 켜고 있어도(진단용)
-  팀원이 자기 키를 따로 안 가져도 이 세 기능은 항상 됨.
-  로컬 repair_shops.py 자체를 테스트하고 싶을 때만 MAP_BACKEND_BASE_URL로 덮어쓴다.
+주소는 팀장님 main 정책을 유지해 용도별로 분리한다.
+- 로컬 AI backend(main.py): 진단, 상담, LLM/RAG 상태, OpenAI 사진 복원
+- Render 경량 backend(main_light.py): 견적, 주소 변환, 주변 정비소
+
+YOLO/RAG는 Render 무료 티어 메모리 한계로 로컬에서 실행한다. 지도 라우터 자체를
+로컬에서 시험할 때만 MAP_BACKEND_BASE_URL을 지정한다.
 """
+import json
+import mimetypes
 import os
+from pathlib import Path
 
 import requests
+from dotenv import load_dotenv
 
-DIAGNOSE_BASE_URL = os.environ.get("BACKEND_BASE_URL", "http://127.0.0.1:8000")
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
-MAP_BASE_URL = os.environ.get(
-    "MAP_BACKEND_BASE_URL",
-    os.environ.get("ESTIMATE_API_BASE_URL", "https://team-12-project.onrender.com"),
-)
+DIAGNOSE_BASE_URL = (
+    os.environ.get("BACKEND_BASE_URL", "").strip() or "http://127.0.0.1:8000"
+).rstrip("/")
+MAP_BASE_URL = (
+    os.environ.get("MAP_BACKEND_BASE_URL", "").strip()
+    or os.environ.get("ESTIMATE_API_BASE_URL", "").strip()
+    or "https://team-12-project.onrender.com"
+).rstrip("/")
 
 DIAGNOSE_URL = f"{DIAGNOSE_BASE_URL}/diagnose"
 CHAT_URL = f"{DIAGNOSE_BASE_URL}/chat"
+LLM_HEALTH_URL = f"{DIAGNOSE_BASE_URL}/health/llm"
+REPAIR_PREVIEW_URL = f"{DIAGNOSE_BASE_URL}/repair-preview"
+REPAIR_PREVIEW_HEALTH_URL = f"{DIAGNOSE_BASE_URL}/health/repair-preview"
 
 ESTIMATE_URL = f"{MAP_BASE_URL}/estimate"
 GEOCODE_URL = f"{MAP_BASE_URL}/geocode"
 REPAIR_SHOPS_URL = f"{MAP_BASE_URL}/repair-shops"
+REPAIR_API_TOKEN = os.environ.get("REPAIR_API_TOKEN", "").strip()
 
 
 def call_diagnose_api(image_bytes, conf_threshold=0.3, filename="upload.jpg"):
@@ -85,7 +95,7 @@ def call_repair_shops_api(x, y, radius, query="자동차 정비소", timeout=10)
     return response.json()
 
 
-def call_chat_api(session_id, message, diagnosis_summary="", timeout=300):
+def call_chat_api(session_id, message, diagnosis_summary="", history=None, timeout=300):
     """backend의 /chat을 호출해 {"answer", "used_llm"}을 반환한다.
 
     diagnosis_summary: 이번 세션의 진단·견적 요약 문자열.
@@ -101,6 +111,7 @@ def call_chat_api(session_id, message, diagnosis_summary="", timeout=300):
             "session_id": session_id,
             "message": message,
             "diagnosis_summary": diagnosis_summary,
+            "history": history or [],
         },
         timeout=timeout,
     )
@@ -115,8 +126,41 @@ def call_llm_health(timeout=5):
     이 구간을 UI에 표시하지 않으면 폴백 답변을 버그로 오해하게 된다.
     """
     try:
-        response = requests.get(f"{BASE_URL}/health/llm", timeout=timeout)
+        response = requests.get(LLM_HEALTH_URL, timeout=timeout)
         response.raise_for_status()
         return response.json()
     except requests.RequestException:
         return None
+
+
+def call_repair_preview_health(timeout=5):
+    """OpenAI 복원 기능의 키 설정 여부와 모델 정보를 반환한다."""
+    try:
+        response = requests.get(REPAIR_PREVIEW_HEALTH_URL, timeout=timeout)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException:
+        return None
+
+
+def call_repair_preview_api(image_bytes, detections, filename="vehicle.jpg", timeout=210):
+    """backend에서 OpenAI 복원 예상 이미지를 생성해 PNG bytes로 반환한다."""
+    content_type = mimetypes.guess_type(filename)[0] or "image/jpeg"
+    if content_type not in {"image/jpeg", "image/png", "image/webp"}:
+        content_type = "image/jpeg"
+    response = requests.post(
+        REPAIR_PREVIEW_URL,
+        files={"file": (filename, image_bytes, content_type)},
+        data={"detections_json": json.dumps(detections, ensure_ascii=False)},
+        headers={"X-Repair-Token": REPAIR_API_TOKEN} if REPAIR_API_TOKEN else None,
+        timeout=timeout,
+    )
+    if not response.ok:
+        try:
+            detail = response.json().get("detail")
+        except (ValueError, AttributeError):
+            detail = None
+        raise RuntimeError(detail or "AI 복원 backend 요청에 실패했습니다.")
+    if not response.content:
+        raise RuntimeError("AI 복원 backend가 빈 이미지를 반환했습니다.")
+    return response.content

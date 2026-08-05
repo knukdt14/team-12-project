@@ -13,9 +13,9 @@ from fastapi.middleware.cors import CORSMiddleware
 # 저장소 루트의 .env(카카오 API 키 등)를 backend/ 안에서 실행해도 자동으로 찾는다.
 load_dotenv()
 
-from routers import chat, diagnose, estimate, repair_shops  # noqa: E402
+from routers import chat, diagnose, estimate, repair_preview, repair_shops  # noqa: E402
 
-app = FastAPI(title="CarDoc Backend", version="0.2.0")
+app = FastAPI(title="CarDoc Backend", version="0.3.0")
 
 # 프론트(Streamlit)가 다른 컨테이너/오리진에서 호출하므로 CORS를 허용한다.
 # 운영 배포 시에는 ALLOWED_ORIGINS 환경변수로 도메인을 좁히는 것을 권장.
@@ -31,6 +31,7 @@ app.include_router(diagnose.router, tags=["diagnose"])
 app.include_router(estimate.router, tags=["estimate"])
 app.include_router(repair_shops.router, tags=["repair-shops"])
 app.include_router(chat.router, tags=["chat"])
+app.include_router(repair_preview.router, tags=["repair-preview"])
 
 
 @app.get("/")
@@ -56,6 +57,8 @@ async def health_llm():
     첫 기동 직후에는 server_up=True, ready=False인 구간이 2~3분 있다.
     이때 /chat은 실패하지 않고 검색 결과 기반 폴백 응답을 낸다.
     """
-    from services import llm_client
+    from services import llm_client, rag
 
-    return llm_client.status()
+    info = llm_client.status()
+    info["rag"] = rag.status()
+    return info

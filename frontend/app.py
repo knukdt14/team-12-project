@@ -8,6 +8,7 @@ Streamlit Frontend — AI 차량 파손 진단 + 예상 수리비 + 상담 UI
 """
 
 import base64
+import hashlib
 import io
 import json
 import os
@@ -26,8 +27,8 @@ from streamlit_folium import st_folium
 
 from PIL import Image
 
-# frontend/app.py는 저장소 루트 밖(frontend/)으로 이동했지만, src/preprocessing.py와
-# repair_inpaint.py는 아직 루트에 있는 공용 모듈이라 루트를 sys.path에 추가해야 import된다.
+# frontend/app.py는 저장소 루트 밖(frontend/)으로 이동했지만,
+# src/preprocessing.py를 가져오기 위해 루트를 sys.path에 추가한다.
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -39,12 +40,11 @@ from utils.api_client import (
     call_estimate_api,
     call_geocode_api,
     call_llm_health,
+    call_repair_preview_api,
+    call_repair_preview_health,
     call_repair_shops_api,
 )
 
-# repair_inpaint(생성형 복원)는 ENABLE_REPAIR_PREVIEW=1 일 때만 import한다.
-# 최상단에서 import하면 torch/diffusers가 없는 배포 이미지에서 앱 전체가 못 뜬다.
-#
 # AI 상담도 RAGS.py(Qwen2.5-7B를 이 프로세스에 직접 로드)를 쓰지 않고
 # backend /chat(Ollama 컨테이너)으로 옮겼다. 이유:
 #   1. 7B 모델을 Streamlit 프로세스에 올리면 프론트 이미지가 6GB를 넘고,
@@ -64,18 +64,6 @@ LOGO_PATH = ROOT_DIR / "docs/ajin_logo.png"
 LOG_DIR = Path(os.getenv("LOG_DIR", ROOT_DIR))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 DIAGNOSIS_LOG_PATH = LOG_DIR / "diagnosis_log.csv"
-
-# 교수님 요청용 "복원 예상" 이미지.
-# 파일이 없으면 안내 박스만 표시합니다.
-REPAIRED_SAMPLE_PATH = ROOT_DIR / "assets/bokgo.jpg"
-
-# AI 복원 예상 이미지(SD1.5 Inpainting) 기능 스위치.
-#
-# 모델 자체는 약 2GB로 가볍지만, torch/diffusers 의존성이 프론트 이미지를 키우고
-# CPU 추론은 한 장에 수 분이 걸려 클라우드 시연에는 부적합합니다.
-# 그래서 기본값 0으로 두고, 필요한 환경에서만 켭니다.
-ENABLE_REPAIR_PREVIEW = os.getenv("ENABLE_REPAIR_PREVIEW", "0").strip() == "1"
-
 
 # ---------------------------------------------------------
 # 표시/내부 코드 매핑
@@ -203,28 +191,6 @@ st.markdown(
 
 
 # ---------------------------------------------------------
-# 모델 로드 (AI 복원 이미지 생성용 — 파손 탐지/분류는 backend가 담당)
-# ---------------------------------------------------------
-@st.cache_resource(show_spinner=False)
-def load_repair_pipeline():
-    """복원 버튼을 처음 눌렀을 때만 생성형 인페인팅 모델(SD1.5)을 로드.
-
-    import을 함수 안에서 하는 이유: torch/diffusers가 없는 배포 이미지에서도
-    앱 자체는 정상 기동해야 하기 때문이다.
-    """
-    from repair_inpaint import load_inpaint_pipeline
-
-    return load_inpaint_pipeline(low_vram=True, sequential_offload=True)
-
-
-def _repair_helpers():
-    """복원 실행에 필요한 심볼을 지연 import해서 반환."""
-    from repair_inpaint import RepairConfig, generate_repaired_image_full
-
-    return RepairConfig, generate_repaired_image_full
-
-
-# ---------------------------------------------------------
 # 진단 관련: call_diagnose_api()는 utils/api_client.py로 이동함
 # (backend /diagnose 호출 로직 — 프론트/백엔드 분리 원칙에 따라 HTTP 통신은
 # api_client 모듈에만 두고, app.py는 UI/상태 관리에 집중)
@@ -232,7 +198,7 @@ def _repair_helpers():
 
 
 # ---------------------------------------------------------
-# AI 상담 — backend /chat (RAG + Ollama/EXAONE)
+# AI 상담 — backend /chat (상세 정비 지식 RAG + Ollama/EXAONE)
 # ---------------------------------------------------------
 def build_diagnosis_summary(diagnosis, estimate):
     """세션의 진단·견적 결과를 LLM 프롬프트에 넣을 한 문단으로 요약.
@@ -273,12 +239,7 @@ def build_diagnosis_summary(diagnosis, estimate):
 
 
 def render_llm_status():
-    """사이드바에 LLM 준비 상태 배지를 그립니다.
-
-    최초 `docker compose up` 직후에는 이미지 빌드가 끝난 뒤부터 모델(약 1.6GB)을
-    내려받기 때문에 2~3분간 "준비 중" 구간이 있습니다. 이 안내가 없으면
-    그 사이의 폴백 응답을 버그로 오해하게 됩니다.
-    """
+    """사이드바에 상담 LLM과 RAG 준비 상태를 표시합니다."""
     status = call_llm_health()
 
     if status is None:
@@ -293,6 +254,18 @@ def render_llm_status():
         st.caption("완료 전까지 AI 상담은 검색 결과 기반 답변을 냅니다.")
     else:
         st.error("LLM 서버(Ollama)가 아직 기동되지 않았습니다.")
+
+    rag_status = status.get("rag") or {}
+    if rag_status.get("ready"):
+        mode = {
+            "hybrid": "의미+키워드",
+            "hybrid_pending": "의미+키워드(첫 질문 시 로드)",
+        }.get(rag_status.get("mode"), "키워드 폴백")
+        st.caption(
+            f"RAG 준비 완료 · 문서 {rag_status.get('documents', 0)}개 · {mode} 검색"
+        )
+    else:
+        st.warning("RAG 정비 문서를 불러오지 못했습니다.")
 
 
 # ---------------------------------------------------------
@@ -653,20 +626,24 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
         with image_col3:
             st.markdown("#### ③ 복원 예상")
 
-            if not ENABLE_REPAIR_PREVIEW:
-                # 버튼을 눌러 실패시키는 대신 사유와 켜는 방법을 안내합니다.
+            repair_status = call_repair_preview_health()
+            if repair_status is None:
                 st.info(
-                    "**AI 복원 예상 이미지는 이 환경에서 비활성화되어 있습니다.**\n\n"
-                    "생성 모델(SD1.5 Inpainting)은 GPU에서 수 초, CPU에서는 한 장에 "
-                    "수 분이 걸려 클라우드 시연 환경에는 켜두지 않았습니다.\n\n"
-                    "GPU가 있는 로컬에서 켜려면:\n\n"
-                    "```\n"
-                    "pip install torch torchvision diffusers transformers accelerate\n"
-                    "ENABLE_REPAIR_PREVIEW=1 docker compose up\n"
-                    "```"
+                    "복원 API 상태를 확인할 수 없습니다. backend가 실행 중인지 확인해주세요."
+                )
+            elif not repair_status.get("configured"):
+                st.info(
+                    "**OpenAI 사진 복원 키가 아직 설정되지 않았습니다.**\n\n"
+                    "저장소 루트 `.env` 파일에 `OPENAI_API_KEY=` 값을 입력한 뒤 "
+                    "backend를 다시 시작해주세요. 실제 키는 코드나 Git에 넣지 않습니다."
                 )
             elif len(boxes) == 0:
                 st.info("손상이 검출되지 않아 복원 이미지를 생성하지 않습니다.")
+            elif not any(box["confidence"] >= 0.3 for box in boxes):
+                st.info(
+                    "복원에 사용할 신뢰도 30% 이상의 손상 영역이 없습니다. "
+                    "다른 각도의 사진으로 다시 진단해주세요."
+                )
             else:
                 # 라벨 표시용으로 가장 신뢰도가 높은 박스는 계속 참조
                 top_box_obj = max(
@@ -679,22 +656,25 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
                     top_raw_class,
                 )
 
-                # 복원 대상은 conf 0.3 이상인 박스 전부 (같은 패널의 여러
-                # 손상 박스를 하나의 마스크로 합쳐서 inpainting하기 위함)
-                damage_boxes = [
-                    tuple(map(float, b["bbox"]))
-                    for b in boxes
-                    if b["confidence"] >= 0.3
-                ]
+                # backend도 같은 임계값으로 재검증한다. 여러 박스는 하나의 큰
+                # 사각형으로 합치지 않고 합집합 마스크로 만들어 정상 영역을 보존한다.
+                repair_detections = [b for b in boxes if b["confidence"] >= 0.3]
 
-                # 동일 업로드 이미지에서는 생성 결과 유지
+                # 파일명이 같아도 내용이 다르면 재생성하도록 이미지 해시를 포함한다.
+                image_digest = hashlib.sha256(uploaded.getvalue()).hexdigest()[:16]
                 repair_key = (
-                    uploaded.name,
+                    image_digest,
                     tuple(
-                        tuple(round(v, 1) for v in b)
-                        for b in damage_boxes
+                        (
+                            detection["part_en"],
+                            detection["damage_type_en"],
+                            round(float(detection["confidence"]), 3),
+                            tuple(round(float(v), 1) for v in detection["bbox"]),
+                        )
+                        for detection in repair_detections
                     ),
                     top_part_label,
+                    repair_status.get("model"),
                 )
 
                 if (
@@ -712,15 +692,20 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
                         use_container_width=True,
                     )
                     st.caption(
-                        "※ 생성형 AI 기반 복원 시뮬레이션이며 "
-                        "실제 수리 결과와 차이가 있을 수 있습니다."
+                        "※ OpenAI 생성형 이미지 편집 기반 시뮬레이션이며 실제 수리 "
+                        "결과와 차이가 있을 수 있습니다."
                     )
 
                 else:
                     st.info(
                         f"검출 부위: {top_part_label}\n\n"
                         "아래 버튼을 누르면 해당 손상 영역을 기준으로 "
-                        "AI 복원 시뮬레이션을 생성합니다."
+                        f"OpenAI `{repair_status.get('model', 'GPT Image')}`가 "
+                        "복원 시뮬레이션을 생성합니다."
+                    )
+                    st.caption(
+                        "복원 버튼을 누르면 차량 사진이 이미지 편집을 위해 OpenAI로 "
+                        "전송됩니다. 번호판 등 민감한 정보가 있으면 먼저 가려주세요."
                     )
 
                     if st.button(
@@ -728,57 +713,19 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
                         key="generate_repair_image",
                         use_container_width=True,
                     ):
-                        original_pil = Image.fromarray(
-                            cv2.cvtColor(
-                                img_bgr,
-                                cv2.COLOR_BGR2RGB,
-                            )
-                        )
-
                         try:
                             with st.spinner(
-                                "생성형 AI가 손상 부위를 복원하고 있습니다... "
-                                "첫 실행은 모델 다운로드 때문에 오래 걸릴 수 있습니다."
+                                "OpenAI가 손상 부위를 복원하고 있습니다... "
+                                "이미지 편집은 최대 2분 정도 걸릴 수 있습니다."
                             ):
-                                RepairConfig, generate_repaired_image_full = (
-                                    _repair_helpers()
+                                repaired_bytes = call_repair_preview_api(
+                                    uploaded.getvalue(),
+                                    repair_detections,
+                                    filename=uploaded.name,
                                 )
-                                repair_pipe = load_repair_pipeline()
-
-                                # 검출된 클래스명 전체를 영문 그대로 프롬프트에
-                                # 전달해 "무엇이 손상됐는지"를 명확히 지시
-                                detected_classes = sorted({
-                                    b["part_en"]
-                                    for b in boxes
-                                    if b["confidence"] >= 0.3
-                                })
-                                damaged_parts = ", ".join(detected_classes)
-
-                                repaired_image, _, _ = generate_repaired_image_full(
-                                    pipe=repair_pipe,
-                                    original_image=original_pil,
-                                    damage_boxes=damage_boxes,
-                                    damaged_parts=damaged_parts,
-                                    # SD1.5 Inpainting 기준 설정.
-                                    # target_size는 학습 해상도인 512를 지켜야
-                                    # 같은 부품이 두 번 그려지는 현상이 없습니다.
-                                    config=RepairConfig(
-                                            mask_blur_radius=15,
-                                            target_size=512,
-                                            steps=35,
-                                            guidance_scale=7.5,
-                                            strength=0.9,
-                                            low_vram=True,
-                                            seed=123,
-                                    ),
-                                    # 박스 밖으로 이어진 파손(범퍼/파편)까지
-                                    # 편집 영역에 포함하도록 넉넉히 확장
-                                    side_pad_ratio=0.45,
-                                    top_pad_ratio=0.20,
-                                    bottom_pad_ratio=1.10,
-                                    merge_boxes=True,
-                                    watermark_frac=0.12,
-                                )
+                                repaired_image = Image.open(io.BytesIO(repaired_bytes))
+                                repaired_image.load()
+                                repaired_image = repaired_image.convert("RGB")
 
                             st.session_state[
                                 "generated_repair_image"
@@ -789,12 +736,10 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
                             st.rerun()
 
                         except Exception as e:
-                            st.error(
-                                "AI 복원 이미지 생성에 실패했습니다."
-                            )
-                            st.code(str(e))
+                            st.error(f"AI 복원 이미지 생성에 실패했습니다: {e}")
                             st.caption(
-                                "diffusers 설치 여부와 GPU 메모리를 확인하세요."
+                                "`.env`의 OPENAI_API_KEY, API 사용 한도와 backend 로그를 "
+                                "확인해주세요."
                             )
 
         st.divider()
@@ -1350,6 +1295,12 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
+            if msg.get("sources"):
+                source_labels = [
+                    f"{source['title']} · {source['section']}"
+                    for source in msg["sources"]
+                ]
+                st.caption("참고 문서: " + " / ".join(source_labels))
 
     question = st.chat_input(
         "예: 이 정도면 후드를 교체해야 하나요?",
@@ -1374,8 +1325,16 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
                         message=question,
                         # 진단·견적 요약을 같이 보내야 LLM이 금액을 인용할 수 있습니다.
                         diagnosis_summary=build_diagnosis_summary(diagnosis, estimate),
+                        history=[
+                            {
+                                "role": msg["role"],
+                                "content": msg["content"][:2000],
+                            }
+                            for msg in st.session_state.messages[:-1][-8:]
+                        ],
                     )
                     answer = result.get("answer", "답변을 받지 못했습니다.")
+                    answer_sources = result.get("sources", [])
                     if not result.get("used_llm", True):
                         # 모델 다운로드 중이거나 답변이 가드레일에 걸린 경우.
                         # 사용자가 품질 저하 이유를 알 수 있게 표시합니다.
@@ -1384,6 +1343,7 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
                             "대체했습니다. 사이드바에서 LLM 상태를 확인하세요."
                         )
                 except Exception as e:
+                    answer_sources = []
                     answer = (
                         "상담 서버(backend)에 연결하지 못했습니다.\n\n"
                         f"({type(e).__name__}: {e})\n\n"
@@ -1391,9 +1351,19 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
                     )
 
             st.markdown(answer)
+            if answer_sources:
+                source_labels = [
+                    f"{source['title']} · {source['section']}"
+                    for source in answer_sources
+                ]
+                st.caption("참고 문서: " + " / ".join(source_labels))
 
         st.session_state.messages.append(
-            {"role": "assistant", "content": answer}
+            {
+                "role": "assistant",
+                "content": answer,
+                "sources": answer_sources,
+            }
         )
 
 

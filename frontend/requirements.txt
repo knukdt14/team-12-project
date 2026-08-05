@@ -4,6 +4,7 @@
 #   - 진단(YOLO + ResNet18) -> backend /diagnose
 #   - 견적(단가표 조회)      -> backend /estimate  (실패 시 로컬 단가표.json 폴백)
 #   - AI 상담(LLM)           -> backend /chat      (Ollama 컨테이너)
+#   - 복원 예상 이미지       -> backend /repair-preview (OpenAI Image API)
 # 덕분에 torch / ultralytics / transformers 가 전부 빠지고
 # 이미지가 약 6GB -> 400MB대로 줄었습니다.
 
@@ -13,12 +14,7 @@ numpy>=1.24
 opencv-python-headless>=4.8  # 박스 그리기/리사이즈용. headless라 X11 불필요
 Pillow>=10.0
 requests>=2.31
+python-dotenv>=1.0
 folium>=0.20
 streamlit-folium>=0.27
 openpyxl>=3.1  # 진단 결과 Excel 다운로드
-
-# --- AI 복원 예상 이미지(ENABLE_REPAIR_PREVIEW=1)를 쓸 때만 필요 ---
-# repair_inpaint.py는 app.py에서 지연 import되므로, 아래를 설치하지 않아도
-# 앱은 정상 기동합니다(복원 버튼이 안내 문구로 대체됨).
-# GPU가 있는 로컬에서 켜려면:
-#   pip install torch torchvision diffusers transformers accelerate safetensors

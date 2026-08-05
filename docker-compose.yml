@@ -12,8 +12,8 @@
 #
 #   GitHub Codespaces에서도 동일합니다. Codespace를 열고 터미널에서
 #   `docker compose up --build` 하면 PORTS 탭에 8501/8000이 자동으로 뜹니다.
-#   .env 파일은 없어도 됩니다(아래 ${VAR:-기본값} 보간 참고).
-#   KAKAO_REST_API_KEY만 정비소 검색에 필요하고, 나머지는 키 없이 동작합니다.
+#   .env가 없어도 진단·견적·상담은 동작합니다(아래 ${VAR:-기본값} 보간 참고).
+#   사진 복원에는 OPENAI_API_KEY, 정비소 검색에는 KAKAO_REST_API_KEY가 필요합니다.
 #
 # 핵심 원칙 1 — 컨테이너끼리는 localhost가 아니라 "서비스 이름"으로 통신합니다.
 #   frontend → backend : http://backend:8000
@@ -21,7 +21,7 @@
 #   컨테이너 안의 localhost는 자기 자신이라 상대 컨테이너에 절대 닿지 않습니다.
 #
 # 핵심 원칙 2 — 빌드 컨텍스트는 둘 다 "저장소 루트"입니다.
-#   ai/, src/, repair_inpaint.py, 단가표.json 이 루트에 있는 공용 모듈이라,
+#   ai/, src/, 단가표.json 이 루트에 있는 공용 모듈이라,
 #   컨텍스트를 backend/ 나 frontend/ 로 좁히면 COPY가 실패합니다.
 
 services:
@@ -34,7 +34,8 @@ services:
       dockerfile: backend/Dockerfile
     image: cardoc-backend:1.0
     ports:
-      - "8000:8000"
+      # 유료 복원 API를 외부 네트워크에 직접 노출하지 않고 로컬에서만 확인합니다.
+      - "127.0.0.1:8000:8000"
     volumes:
       # 모델 가중치는 이미지에 굽지 않고 read-only로 마운트합니다.
       # 재학습해도 이미지를 다시 빌드할 필요가 없습니다.
@@ -48,6 +49,15 @@ services:
       - OLLAMA_BASE_URL=http://llm:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-exaone3.5:2.4b}
       - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-300}
+      # 사진 복원은 backend에서만 OpenAI를 호출합니다. 키를 frontend에 전달하지 않습니다.
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_IMAGE_MODEL=${OPENAI_IMAGE_MODEL:-gpt-image-2}
+      - OPENAI_IMAGE_QUALITY=${OPENAI_IMAGE_QUALITY:-medium}
+      - OPENAI_IMAGE_SIZE=${OPENAI_IMAGE_SIZE:-auto}
+      - OPENAI_IMAGE_TIMEOUT=${OPENAI_IMAGE_TIMEOUT:-180}
+      - REPAIR_API_TOKEN=${REPAIR_API_TOKEN:-}
+      - REPAIR_RATE_LIMIT_PER_MINUTE=${REPAIR_RATE_LIMIT_PER_MINUTE:-4}
+      - REPAIR_MAX_CONCURRENT_GENERATIONS=${REPAIR_MAX_CONCURRENT_GENERATIONS:-1}
       - PYTHONUNBUFFERED=1
     depends_on:
       # LLM은 모델 다운로드가 느리므로 "떴다"까지만 기다립니다.
@@ -73,10 +83,8 @@ services:
       # ★ frontend/backend 분리의 핵심. 하드코딩 localhost 금지.
       #   utils/api_client.py가 이 변수를 읽습니다.
       - BACKEND_BASE_URL=http://backend:8000
+      - REPAIR_API_TOKEN=${REPAIR_API_TOKEN:-}
       - LOG_DIR=/app/logs
-      # AI 복원 예상 이미지(SD1.5 Inpainting)는 CPU에서 한 장에 수 분 걸립니다.
-      # 클라우드 시연에서는 꺼두고, GPU가 있는 로컬에서만 1로 켜세요.
-      - ENABLE_REPAIR_PREVIEW=${ENABLE_REPAIR_PREVIEW:-0}
       - PYTHONUNBUFFERED=1
     depends_on:
       backend:

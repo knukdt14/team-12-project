@@ -48,7 +48,7 @@ COPY backend/ backend/
 # 빌드 환경에 네트워크가 없어도 빌드는 계속되도록 실패를 무시합니다.
 ENV HF_HOME=/app/.cache/huggingface
 RUN python ai/build_vectorstore.py \
-    || echo "[build] 인덱스 사전 생성 실패 — /chat은 RAG 없이 동작합니다"
+    || echo "[build] 인덱스 사전 생성 실패 — /chat은 Markdown 키워드 RAG로 동작합니다"
 
 EXPOSE 8000
 
