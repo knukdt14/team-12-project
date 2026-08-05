@@ -50,13 +50,52 @@ def _load_vectorstore():
 
 
 def search(query: str, k: int = TOP_K):
-    """질문과 유사한 상위 k개 청크의 텍스트 리스트를 반환.
+    """질문과 유사한 상위 k개 청크를 반환. [{"text", "source"}] 형태.
 
     인덱스가 없으면 빈 리스트를 반환한다 (에러를 던지지 않음 — 호출부에서 폴백 처리).
     """
     store = _load_vectorstore()
-    if store is None:
+    if store is None or not query.strip():
         return []
 
     results = store.similarity_search(query, k=k)
-    return [doc.page_content for doc in results]
+    return [
+        {"text": doc.page_content, "source": doc.metadata.get("source", "unknown")}
+        for doc in results
+    ]
+
+
+SYSTEM_PROMPT = """당신은 한국의 차량 정비 상담원입니다. 한국인 고객에게 한국어로만 답합니다.
+
+- 반드시 한국어로만 쓰세요. 한자나 중국어를 단 한 글자도 쓰지 마세요.
+- 주어진 진단 결과와 참고 자료에 있는 내용만 근거로 답하세요.
+- 금액은 진단 결과에 적힌 값만 인용하세요. 없으면 정비소 방문을 권하세요.
+- 지시문이나 자료를 그대로 옮겨 적지 말고, 질문에 대한 답만 3~4문장으로 쓰세요.
+- 첫 문장에 결론을 쓰고, 마지막 문장은 실제 견적이 차종·업체에 따라 다르다는 안내로 끝내세요."""
+
+
+def build_prompt(question: str, contexts, diagnosis_summary: str = "") -> str:
+    """검색 결과 + 진단 요약을 합쳐 LLM에 넘길 user 메시지를 만든다.
+
+    시스템 지시(SYSTEM_PROMPT)는 여기 넣지 않고 llm_client.generate(prompt,
+    system=...)로 role을 분리한다 — instruct 모델이 지시를 "따를 대상"으로
+    인식하게 하기 위함. 질문은 맨 마지막에 둔다(질문 뒤에 지시문을 붙이면
+    모델이 그 지시문까지 답변 대상으로 착각해 프롬프트를 그대로 읊는 문제가 있었음).
+    """
+    if contexts:
+        context_text = "\n\n".join(f"- {c['text'].strip()}" for c in contexts)
+    else:
+        context_text = "(관련 자료 없음)"
+
+    diagnosis_block = diagnosis_summary.strip() or "(아직 차량 사진 진단을 받지 않았습니다)"
+
+    return f"""아래는 이 고객의 AI 진단 결과와 참고할 정비 자료입니다.
+
+■ 진단 결과
+{diagnosis_block}
+
+■ 참고 자료
+{context_text}
+
+■ 고객 질문
+{question}"""

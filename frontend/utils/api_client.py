@@ -74,15 +74,20 @@ def call_repair_shops_api(x, y, radius, query="자동차 정비소", timeout=10)
     return response.json()
 
 
-def call_chat_api(session_id, message, timeout=30):
-    """backend의 /chat을 호출해 {"answer": ...}를 반환한다.
+def call_chat_api(session_id, message, diagnosis_summary="", timeout=60):
+    """backend의 /chat을 호출해 {"answer", "sources", "used_llm"}를 반환한다.
 
-    app.py의 "AI 상담" 탭은 아직 이 함수를 쓰지 않고 하드코딩된 답변을 쓰고
-    있음 — /chat 연동은 별도 작업으로 남아있음 (RAGS.py 통합 여부 포함).
+    diagnosis_summary: 이번 세션의 진단·견적 요약 텍스트. backend가 세션을
+    따로 저장하지 않으므로, 매 요청마다 여기에 실어 보내야 답변이 실제
+    진단/견적 내용을 참고한다.
     """
     response = requests.post(
         CHAT_URL,
-        json={"session_id": session_id, "message": message},
+        json={
+            "session_id": session_id,
+            "message": message,
+            "diagnosis_summary": diagnosis_summary,
+        },
         timeout=timeout,
     )
     response.raise_for_status()

@@ -11,6 +11,7 @@ import base64
 import io
 import json
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -38,16 +39,11 @@ from repair_inpaint import (
     load_inpaint_pipeline,
 )
 from utils.api_client import (
+    call_chat_api,
     call_diagnose_api,
     call_estimate_api,
     call_geocode_api,
     call_repair_shops_api,
-)
-# AI 상담은 당분간 backend /chat 대신 RAGS.py(Qwen2.5-7B 직접 로드) 방식을 유지함
-# — backend /chat이 진단·견적 컨텍스트/멀티턴을 지원하게 되면 교체 예정 (별도 과제).
-from RAGS import (
-    generate_consult_answer,
-    load_consult_model,
 )
 
 
@@ -213,18 +209,32 @@ def load_repair_pipeline():
 
 
 # ---------------------------------------------------------
-# AI 상담 모델 로드 (RAGS.py — Qwen2.5-7B-Instruct 직접 로드 방식)
-# TODO: backend /chat이 진단·견적 컨텍스트 반영 + 멀티턴을 지원하게 되면
-# call_chat_api()로 교체하고 이 직접 로드 방식은 제거할 것.
+# AI 상담: backend /chat 호출 (call_chat_api()는 utils/api_client.py로 이동함)
+# backend가 세션을 따로 저장하지 않으므로, 매 요청마다 진단·견적 요약을
+# diagnosis_summary로 같이 실어 보낸다.
 # ---------------------------------------------------------
-@st.cache_resource(show_spinner=False)
-def load_consult_llm():
-    """AI 상담 탭을 처음 열었을 때만 Qwen2.5-7B-Instruct(4bit)를 로드.
+def build_diagnosis_summary(diagnosis, estimate):
+    """/chat에 보낼 진단·견적 요약 텍스트를 만든다."""
+    if not diagnosis:
+        return ""
+    if diagnosis.get("normal"):
+        return "손상이 발견되지 않은 정상 차량입니다."
 
-    FLUX Kontext와 마찬가지로 실제 채팅 전까지는 로드하지 않고,
-    st.cache_resource로 한 번 로드한 뒤 세션 내내 재사용합니다.
-    """
-    return load_consult_model(low_vram=True)
+    primary = diagnosis.get("primary", {})
+    lines = [
+        f'부위: {primary.get("part_label", "알 수 없음")}',
+        f'손상 종류: {primary.get("damage_label", "알 수 없음")}',
+        f'탐지 신뢰도: {primary.get("confidence", 0):.1%}',
+    ]
+
+    if estimate and estimate.get("success"):
+        lines += [
+            f'심각도: {estimate.get("severity")}',
+            f'예상 수리 방식: {estimate.get("repair_method")}',
+            f'예상 비용: {estimate.get("min_cost", 0):,}~{estimate.get("max_cost", 0):,}원',
+        ]
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------
@@ -1238,7 +1248,7 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
     st.markdown("### 💬 AI 수리 상담")
 
     st.caption(
-        "진단·견적 결과를 참고해 Qwen2.5-7B-Instruct(로컬)가 답변합니다. "
+        "진단·견적 결과와 정비 자료를 참고해 backend가 답변합니다. "
         "실제 수리 여부·비용을 확정하는 답변이 아니니 참고용으로만 봐주세요."
     )
 
@@ -1254,6 +1264,9 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
             f'신뢰도 {primary["confidence"]:.1%}'
         )
 
+    if "chat_session_id" not in st.session_state:
+        st.session_state.chat_session_id = str(uuid.uuid4())
+
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
@@ -1267,9 +1280,6 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
     )
 
     if question:
-        # 이번 질문을 프롬프트에 넣기 전의 대화 이력(과거 턴만)
-        history = list(st.session_state.messages)
-
         st.session_state.messages.append(
             {"role": "user", "content": question}
         )
@@ -1280,21 +1290,17 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
         with st.chat_message("assistant"):
             with st.spinner("답변을 생성하는 중..."):
                 try:
-                    model, tokenizer = load_consult_llm()
-                    answer = generate_consult_answer(
-                        model,
-                        tokenizer,
-                        question=question,
-                        diagnosis=diagnosis,
-                        estimate=estimate,
-                        history=history,
+                    chat_result = call_chat_api(
+                        session_id=st.session_state.chat_session_id,
+                        message=question,
+                        diagnosis_summary=build_diagnosis_summary(diagnosis, estimate),
                     )
-                except Exception as e:
+                    answer = chat_result["answer"]
+                except requests.RequestException as e:
                     answer = (
-                        "죄송합니다, 상담 모델을 불러오거나 답변을 생성하는 중 "
-                        f"오류가 발생했습니다. ({type(e).__name__}: {e})\n\n"
-                        "GPU 메모리가 부족하거나 모델 로드에 실패했을 수 있습니다. "
-                        "잠시 후 다시 시도해주세요."
+                        "죄송합니다, 상담 서버에 연결하지 못했습니다. "
+                        f"({type(e).__name__}: {e})\n\n"
+                        "backend가 켜져 있는지 확인 후 다시 시도해주세요."
                     )
 
             st.markdown(answer)

@@ -82,7 +82,13 @@ class GeocodeResponse(BaseModel):
 class ChatRequest(BaseModel):
     session_id: str
     message: str
+    # 이번 세션의 진단·견적 요약. 서버에 세션 저장소를 두지 않고, 매 요청마다
+    # 프론트가 이 값을 같이 보내는 방식으로 컨텍스트를 주입한다 (금액은 이 값만
+    # 인용하도록 프롬프트/가드레일에서 강제 — 단가표.json llm_guardrails.rule1).
+    diagnosis_summary: str = ""
 
 
 class ChatResponse(BaseModel):
     answer: str
+    sources: List[str] = []  # 답변 근거로 쓴 지식 문서명
+    used_llm: bool = True  # False면 LLM 없이 검색 결과만으로 만든 폴백 응답
