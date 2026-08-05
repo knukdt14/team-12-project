@@ -1,0 +1,49 @@
+{
+  // GitHub Codespaces / VS Code Dev Containers 설정
+  //
+  // Codespace를 열면 Docker가 준비된 상태로 시작하고, 아래 한 줄로 전체 기동됩니다.
+  //   docker compose up --build
+  //
+  // 빌드가 끝나면 VS Code의 PORTS 탭에 8501(Streamlit), 8000(FastAPI)이 뜹니다.
+  // 8501의 지구본 아이콘을 눌러 브라우저로 접속하세요.
+  "name": "CarDoc (frontend + backend + llm)",
+
+  // Docker 명령을 쓰기 위한 베이스 이미지 (Python 3.12 + 개발 도구 포함)
+  "image": "mcr.microsoft.com/devcontainers/python:3.12-bookworm",
+
+  "features": {
+    // Codespace 안에서 docker / docker compose 를 쓸 수 있게 해줍니다.
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "dockerDashComposeVersion": "v2"
+    }
+  },
+
+  // 컨테이너가 열 포트. Codespaces가 자동으로 포워딩합니다.
+  "forwardPorts": [8501, 8000, 11434],
+  "portsAttributes": {
+    "8501": { "label": "Streamlit UI", "onAutoForward": "openBrowser" },
+    "8000": { "label": "FastAPI docs", "onAutoForward": "notify" },
+    "11434": { "label": "Ollama (LLM)", "onAutoForward": "silent" }
+  },
+
+  // Codespace 생성 직후 1회 실행 — 편의를 위해 .env를 미리 만들어 둡니다.
+  // 없어도 compose는 ${VAR:-기본값} 보간으로 정상 기동하므로 실패해도 무방합니다.
+  "postCreateCommand": "cp -n .env.example .env || true",
+
+  // LLM(exaone3.5:2.4b) + backend(torch/YOLO)를 동시에 올려야 하므로
+  // Codespace 생성 시 4코어/16GB 이상을 강제합니다.
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "16gb",
+    "storage": "32gb"
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python", "ms-azuretools.vscode-docker"]
+    }
+  },
+
+  "remoteUser": "vscode"
+}

@@ -8,8 +8,10 @@ Streamlit Frontend — AI 차량 파손 진단 + 예상 수리비 + 상담 UI
 """
 
 import base64
+import hashlib
 import io
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -25,30 +27,29 @@ from streamlit_folium import st_folium
 
 from PIL import Image
 
-# frontend/app.py는 저장소 루트 밖(frontend/)으로 이동했지만, src/preprocessing.py와
-# repair_inpaint.py는 아직 루트에 있는 공용 모듈이라 루트를 sys.path에 추가해야 import된다.
+# frontend/app.py는 저장소 루트 밖(frontend/)으로 이동했지만,
+# src/preprocessing.py를 가져오기 위해 루트를 sys.path에 추가한다.
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from src.preprocessing import draw_detections, resize_for_display
-from repair_inpaint import (
-    RepairConfig,
-    generate_repaired_image_full,
-    load_inpaint_pipeline,
-)
 from utils.api_client import (
+    call_chat_api,
     call_diagnose_api,
     call_estimate_api,
     call_geocode_api,
+    call_llm_health,
+    call_repair_preview_api,
+    call_repair_preview_health,
     call_repair_shops_api,
 )
-# AI 상담은 당분간 backend /chat 대신 RAGS.py(Qwen2.5-7B 직접 로드) 방식을 유지함
-# — backend /chat이 진단·견적 컨텍스트/멀티턴을 지원하게 되면 교체 예정 (별도 과제).
-from RAGS import (
-    generate_consult_answer,
-    load_consult_model,
-)
+
+# AI 상담도 RAGS.py(Qwen2.5-7B를 이 프로세스에 직접 로드)를 쓰지 않고
+# backend /chat(Ollama 컨테이너)으로 옮겼다. 이유:
+#   1. 7B 모델을 Streamlit 프로세스에 올리면 프론트 이미지가 6GB를 넘고,
+#      4bit 양자화(bitsandbytes)는 CUDA가 필요해 GPU 없는 클라우드에서 실패한다.
+#   2. LLM은 backend가 소유하는 게 프론트/백엔드 분리 원칙에도 맞는다.
 
 
 # ---------------------------------------------------------
@@ -57,13 +58,12 @@ from RAGS import (
 PRICE_TABLE_PATH = ROOT_DIR / "단가표.json"
 LOGO_PATH = ROOT_DIR / "docs/ajin_logo.png"
 
-# 대시보드 집계용 진단 이력 누적 로그 (견적 생성 시마다 1행씩 append)
-DIAGNOSIS_LOG_PATH = ROOT_DIR / "diagnosis_log.csv"
-
-# 교수님 요청용 "복원 예상" 이미지.
-# 파일이 없으면 안내 박스만 표시합니다.
-REPAIRED_SAMPLE_PATH = ROOT_DIR / "assets/bokgo.jpg"
-
+# 대시보드 집계용 진단 이력 누적 로그 (견적 생성 시마다 1행씩 append).
+# 컨테이너에서는 LOG_DIR=/app/logs(named volume)로 주입해서, 컨테이너를 지워도
+# 진단 이력이 남도록 합니다. 로컬 실행 시에는 기존처럼 저장소 루트에 생성됩니다.
+LOG_DIR = Path(os.getenv("LOG_DIR", ROOT_DIR))
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+DIAGNOSIS_LOG_PATH = LOG_DIR / "diagnosis_log.csv"
 
 # ---------------------------------------------------------
 # 표시/내부 코드 매핑
@@ -191,21 +191,6 @@ st.markdown(
 
 
 # ---------------------------------------------------------
-# 모델 로드 (AI 복원 이미지 생성용 — 파손 탐지/분류는 backend가 담당)
-# ---------------------------------------------------------
-@st.cache_resource(show_spinner=False)
-def load_repair_pipeline():
-    """복원 버튼을 처음 눌렀을 때만 생성형 인페인팅 모델을 로드.
-
-    sequential_offload=True: VRAM을 가장 아껴 쓰는 모드(느리지만 안전).
-    GPU VRAM이 16GB 이상으로 넉넉하고 속도가 더 중요하면
-    sequential_offload=False 로 바꿔보세요(대신 YOLO 등 다른 모델과
-    VRAM을 나눠 쓸 때 OOM 위험이 커집니다).
-    """
-    return load_inpaint_pipeline(low_vram=True, sequential_offload=True)
-
-
-# ---------------------------------------------------------
 # 진단 관련: call_diagnose_api()는 utils/api_client.py로 이동함
 # (backend /diagnose 호출 로직 — 프론트/백엔드 분리 원칙에 따라 HTTP 통신은
 # api_client 모듈에만 두고, app.py는 UI/상태 관리에 집중)
@@ -213,18 +198,74 @@ def load_repair_pipeline():
 
 
 # ---------------------------------------------------------
-# AI 상담 모델 로드 (RAGS.py — Qwen2.5-7B-Instruct 직접 로드 방식)
-# TODO: backend /chat이 진단·견적 컨텍스트 반영 + 멀티턴을 지원하게 되면
-# call_chat_api()로 교체하고 이 직접 로드 방식은 제거할 것.
+# AI 상담 — backend /chat (상세 정비 지식 RAG + Ollama/EXAONE)
 # ---------------------------------------------------------
-@st.cache_resource(show_spinner=False)
-def load_consult_llm():
-    """AI 상담 탭을 처음 열었을 때만 Qwen2.5-7B-Instruct(4bit)를 로드.
+def build_diagnosis_summary(diagnosis, estimate):
+    """세션의 진단·견적 결과를 LLM 프롬프트에 넣을 한 문단으로 요약.
 
-    FLUX Kontext와 마찬가지로 실제 채팅 전까지는 로드하지 않고,
-    st.cache_resource로 한 번 로드한 뒤 세션 내내 재사용합니다.
+    견적(estimate)은 없을 수 있습니다 — 단가표에 없는 (부위, 손상 종류, 심각도)
+    조합이면 조회가 실패하기 때문입니다. 그 경우에도 진단 결과만은 반드시
+    넘겨야 합니다. 이걸 안 넘기면 챗봇이 "사진에서 뭘 찾았는지" 자체를 모른 채
+    답하게 되어, 일반론만 늘어놓는 답변이 나옵니다.
     """
-    return load_consult_model(low_vram=True)
+    if not diagnosis or diagnosis.get("normal"):
+        return ""
+
+    primary = diagnosis.get("primary") or {}
+    part_label = primary.get("part_label", "미상")
+    # 견적이 성공했으면 단가표 기준 부위명을 쓰는 편이 LLM에게 더 정확합니다.
+    if estimate and estimate.get("part_label"):
+        part_label = estimate["part_label"]
+
+    lines = [
+        f"- 부위: {part_label}",
+        f"- 손상 종류: {primary.get('damage_label', '미상')}",
+        f"- 심각도: {st.session_state.get('severity_ko', '중간')} (사용자 선택값)",
+        f"- 탐지 신뢰도: {primary.get('confidence', 0):.1%}",
+    ]
+
+    if estimate and estimate.get("success"):
+        lines += [
+            f"- 수리 방식: {estimate['repair_method']}",
+            f"- 예상 비용: {estimate['min_cost']:,}원 ~ {estimate['max_cost']:,}원",
+        ]
+    else:
+        lines.append(
+            "- 견적: 단가표에 이 (부위, 손상 종류, 심각도) 조합이 없어 금액을 "
+            "산출하지 못했습니다. 금액을 추측하지 말고 정비소 방문을 권하세요."
+        )
+
+    return "\n".join(lines)
+
+
+def render_llm_status():
+    """사이드바에 상담 LLM과 RAG 준비 상태를 표시합니다."""
+    status = call_llm_health()
+
+    if status is None:
+        st.warning("백엔드에 연결할 수 없습니다.")
+        return
+
+    model = status.get("model", "?")
+    if status.get("ready"):
+        st.success(f"LLM 준비 완료 · {model}")
+    elif status.get("server_up"):
+        st.warning(f"모델 다운로드 중 · {model}")
+        st.caption("완료 전까지 AI 상담은 검색 결과 기반 답변을 냅니다.")
+    else:
+        st.error("LLM 서버(Ollama)가 아직 기동되지 않았습니다.")
+
+    rag_status = status.get("rag") or {}
+    if rag_status.get("ready"):
+        mode = {
+            "hybrid": "의미+키워드",
+            "hybrid_pending": "의미+키워드(첫 질문 시 로드)",
+        }.get(rag_status.get("mode"), "키워드 폴백")
+        st.caption(
+            f"RAG 준비 완료 · 문서 {rag_status.get('documents', 0)}개 · {mode} 검색"
+        )
+    else:
+        st.warning("RAG 정비 문서를 불러오지 못했습니다.")
 
 
 # ---------------------------------------------------------
@@ -468,6 +509,10 @@ with st.sidebar:
     st.caption("견적은 룰베이스 단가표를 사용합니다.")
 
     st.divider()
+    st.markdown("### 🤖 AI 상담 모델")
+    render_llm_status()
+
+    st.divider()
     if st.session_state.get("diagnosis"):
         st.success("✅ 차량 진단 완료")
     else:
@@ -581,8 +626,24 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
         with image_col3:
             st.markdown("#### ③ 복원 예상")
 
-            if len(boxes) == 0:
+            repair_status = call_repair_preview_health()
+            if repair_status is None:
+                st.info(
+                    "복원 API 상태를 확인할 수 없습니다. backend가 실행 중인지 확인해주세요."
+                )
+            elif not repair_status.get("configured"):
+                st.info(
+                    "**OpenAI 사진 복원 키가 아직 설정되지 않았습니다.**\n\n"
+                    "저장소 루트 `.env` 파일에 `OPENAI_API_KEY=` 값을 입력한 뒤 "
+                    "backend를 다시 시작해주세요. 실제 키는 코드나 Git에 넣지 않습니다."
+                )
+            elif len(boxes) == 0:
                 st.info("손상이 검출되지 않아 복원 이미지를 생성하지 않습니다.")
+            elif not any(box["confidence"] >= 0.3 for box in boxes):
+                st.info(
+                    "복원에 사용할 신뢰도 30% 이상의 손상 영역이 없습니다. "
+                    "다른 각도의 사진으로 다시 진단해주세요."
+                )
             else:
                 # 라벨 표시용으로 가장 신뢰도가 높은 박스는 계속 참조
                 top_box_obj = max(
@@ -595,22 +656,25 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
                     top_raw_class,
                 )
 
-                # 복원 대상은 conf 0.3 이상인 박스 전부 (같은 패널의 여러
-                # 손상 박스를 하나의 마스크로 합쳐서 inpainting하기 위함)
-                damage_boxes = [
-                    tuple(map(float, b["bbox"]))
-                    for b in boxes
-                    if b["confidence"] >= 0.3
-                ]
+                # backend도 같은 임계값으로 재검증한다. 여러 박스는 하나의 큰
+                # 사각형으로 합치지 않고 합집합 마스크로 만들어 정상 영역을 보존한다.
+                repair_detections = [b for b in boxes if b["confidence"] >= 0.3]
 
-                # 동일 업로드 이미지에서는 생성 결과 유지
+                # 파일명이 같아도 내용이 다르면 재생성하도록 이미지 해시를 포함한다.
+                image_digest = hashlib.sha256(uploaded.getvalue()).hexdigest()[:16]
                 repair_key = (
-                    uploaded.name,
+                    image_digest,
                     tuple(
-                        tuple(round(v, 1) for v in b)
-                        for b in damage_boxes
+                        (
+                            detection["part_en"],
+                            detection["damage_type_en"],
+                            round(float(detection["confidence"]), 3),
+                            tuple(round(float(v), 1) for v in detection["bbox"]),
+                        )
+                        for detection in repair_detections
                     ),
                     top_part_label,
+                    repair_status.get("model"),
                 )
 
                 if (
@@ -628,15 +692,20 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
                         use_container_width=True,
                     )
                     st.caption(
-                        "※ 생성형 AI 기반 복원 시뮬레이션이며 "
-                        "실제 수리 결과와 차이가 있을 수 있습니다."
+                        "※ OpenAI 생성형 이미지 편집 기반 시뮬레이션이며 실제 수리 "
+                        "결과와 차이가 있을 수 있습니다."
                     )
 
                 else:
                     st.info(
                         f"검출 부위: {top_part_label}\n\n"
                         "아래 버튼을 누르면 해당 손상 영역을 기준으로 "
-                        "AI 복원 시뮬레이션을 생성합니다."
+                        f"OpenAI `{repair_status.get('model', 'GPT Image')}`가 "
+                        "복원 시뮬레이션을 생성합니다."
+                    )
+                    st.caption(
+                        "복원 버튼을 누르면 차량 사진이 이미지 편집을 위해 OpenAI로 "
+                        "전송됩니다. 번호판 등 민감한 정보가 있으면 먼저 가려주세요."
                     )
 
                     if st.button(
@@ -644,51 +713,19 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
                         key="generate_repair_image",
                         use_container_width=True,
                     ):
-                        original_pil = Image.fromarray(
-                            cv2.cvtColor(
-                                img_bgr,
-                                cv2.COLOR_BGR2RGB,
-                            )
-                        )
-
                         try:
                             with st.spinner(
-                                "생성형 AI가 손상 부위를 복원하고 있습니다... "
-                                "첫 실행은 모델 다운로드 때문에 오래 걸릴 수 있습니다."
+                                "OpenAI가 손상 부위를 복원하고 있습니다... "
+                                "이미지 편집은 최대 2분 정도 걸릴 수 있습니다."
                             ):
-                                repair_pipe = load_repair_pipeline()
-
-                                # 검출된 클래스명 전체를 영문 그대로 프롬프트에
-                                # 전달해 "무엇이 손상됐는지"를 명확히 지시
-                                detected_classes = sorted({
-                                    b["part_en"]
-                                    for b in boxes
-                                    if b["confidence"] >= 0.3
-                                })
-                                damaged_parts = ", ".join(detected_classes)
-
-                                repaired_image, _, _ = generate_repaired_image_full(
-                                    pipe=repair_pipe,
-                                    original_image=original_pil,
-                                    damage_boxes=damage_boxes,
-                                    damaged_parts=damaged_parts,
-                                    config=RepairConfig(
-                                            mask_blur_radius=15,
-                                            target_size=512,
-                                            steps=18,
-                                            guidance_scale=2.5,
-                                            true_cfg_scale=1.0,
-                                            low_vram=True,
-                                            seed=123,
-                                    ),
-                                    # 박스 밖으로 이어진 파손(범퍼/파편)까지
-                                    # 편집 영역에 포함하도록 넉넉히 확장
-                                    side_pad_ratio=0.45,
-                                    top_pad_ratio=0.20,
-                                    bottom_pad_ratio=1.10,
-                                    merge_boxes=True,
-                                    watermark_frac=0.12,
+                                repaired_bytes = call_repair_preview_api(
+                                    uploaded.getvalue(),
+                                    repair_detections,
+                                    filename=uploaded.name,
                                 )
+                                repaired_image = Image.open(io.BytesIO(repaired_bytes))
+                                repaired_image.load()
+                                repaired_image = repaired_image.convert("RGB")
 
                             st.session_state[
                                 "generated_repair_image"
@@ -699,12 +736,10 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
                             st.rerun()
 
                         except Exception as e:
-                            st.error(
-                                "AI 복원 이미지 생성에 실패했습니다."
-                            )
-                            st.code(str(e))
+                            st.error(f"AI 복원 이미지 생성에 실패했습니다: {e}")
                             st.caption(
-                                "diffusers 설치 여부와 GPU 메모리를 확인하세요."
+                                "`.env`의 OPENAI_API_KEY, API 사용 한도와 backend 로그를 "
+                                "확인해주세요."
                             )
 
         st.divider()
@@ -1238,8 +1273,8 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
     st.markdown("### 💬 AI 수리 상담")
 
     st.caption(
-        "진단·견적 결과를 참고해 Qwen2.5-7B-Instruct(로컬)가 답변합니다. "
-        "실제 수리 여부·비용을 확정하는 답변이 아니니 참고용으로만 봐주세요."
+        "backend /chat (RAG + LLM)에 질문을 보냅니다. 정비 지식 문서를 검색해 "
+        "근거와 함께 답변하며, 금액은 단가표 조회 결과를 그대로 인용합니다."
     )
 
     diagnosis = st.session_state.get("diagnosis")
@@ -1260,6 +1295,12 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
+            if msg.get("sources"):
+                source_labels = [
+                    f"{source['title']} · {source['section']}"
+                    for source in msg["sources"]
+                ]
+                st.caption("참고 문서: " + " / ".join(source_labels))
 
     question = st.chat_input(
         "예: 이 정도면 후드를 교체해야 하나요?",
@@ -1267,9 +1308,6 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
     )
 
     if question:
-        # 이번 질문을 프롬프트에 넣기 전의 대화 이력(과거 턴만)
-        history = list(st.session_state.messages)
-
         st.session_state.messages.append(
             {"role": "user", "content": question}
         )
@@ -1280,27 +1318,52 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
         with st.chat_message("assistant"):
             with st.spinner("답변을 생성하는 중..."):
                 try:
-                    model, tokenizer = load_consult_llm()
-                    answer = generate_consult_answer(
-                        model,
-                        tokenizer,
-                        question=question,
-                        diagnosis=diagnosis,
-                        estimate=estimate,
-                        history=history,
+                    result = call_chat_api(
+                        session_id=st.session_state.get(
+                            "session_id", "streamlit-session"
+                        ),
+                        message=question,
+                        # 진단·견적 요약을 같이 보내야 LLM이 금액을 인용할 수 있습니다.
+                        diagnosis_summary=build_diagnosis_summary(diagnosis, estimate),
+                        history=[
+                            {
+                                "role": msg["role"],
+                                "content": msg["content"][:2000],
+                            }
+                            for msg in st.session_state.messages[:-1][-8:]
+                        ],
                     )
+                    answer = result.get("answer", "답변을 받지 못했습니다.")
+                    answer_sources = result.get("sources", [])
+                    if not result.get("used_llm", True):
+                        # 모델 다운로드 중이거나 답변이 가드레일에 걸린 경우.
+                        # 사용자가 품질 저하 이유를 알 수 있게 표시합니다.
+                        answer += (
+                            "\n\n> ⚠️ LLM 응답을 쓰지 못해 검색된 정비 자료로 "
+                            "대체했습니다. 사이드바에서 LLM 상태를 확인하세요."
+                        )
                 except Exception as e:
+                    answer_sources = []
                     answer = (
-                        "죄송합니다, 상담 모델을 불러오거나 답변을 생성하는 중 "
-                        f"오류가 발생했습니다. ({type(e).__name__}: {e})\n\n"
-                        "GPU 메모리가 부족하거나 모델 로드에 실패했을 수 있습니다. "
-                        "잠시 후 다시 시도해주세요."
+                        "상담 서버(backend)에 연결하지 못했습니다.\n\n"
+                        f"({type(e).__name__}: {e})\n\n"
+                        "`docker compose logs -f backend` 로 상태를 확인해주세요."
                     )
 
             st.markdown(answer)
+            if answer_sources:
+                source_labels = [
+                    f"{source['title']} · {source['section']}"
+                    for source in answer_sources
+                ]
+                st.caption("참고 문서: " + " / ".join(source_labels))
 
         st.session_state.messages.append(
-            {"role": "assistant", "content": answer}
+            {
+                "role": "assistant",
+                "content": answer,
+                "sources": answer_sources,
+            }
         )
 
 

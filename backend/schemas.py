@@ -4,9 +4,9 @@ API 명세는 프로젝트 루트 README.md "4. API 명세" 참고.
 지금은 스캐폴딩 단계라 값 검증 위주로만 정의하고, 실제 추론/계산 로직은
 services/ 쪽에 연결되는 대로 여기 필드도 맞춰 조정합니다.
 """
-from typing import List, Optional
+from typing import List, Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Detection(BaseModel):
@@ -79,10 +79,29 @@ class GeocodeResponse(BaseModel):
     message: Optional[str] = None
 
 
+class ChatHistoryItem(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class RAGSource(BaseModel):
+    title: str
+    section: str
+    source: str
+
+
 class ChatRequest(BaseModel):
-    session_id: str
-    message: str
+    session_id: str = Field(min_length=1, max_length=200)
+    message: str = Field(min_length=1, max_length=2000)
+    # 이번 세션의 진단·견적 요약. 챗봇이 금액을 지어내지 않고 이 값을 인용하도록
+    # 프롬프트에 그대로 넣는다 (단가표.json llm_guardrails.rule1).
+    diagnosis_summary: str = Field(default="", max_length=4000)
+    # 대명사형 후속 질문("그럼 교체해야 해?")을 해석하기 위한 최근 대화.
+    history: List[ChatHistoryItem] = Field(default_factory=list, max_length=8)
 
 
 class ChatResponse(BaseModel):
     answer: str
+    used_llm: bool = True  # False면 LLM 없이 검색 결과만으로 만든 폴백 응답
+    rag_used: bool = False
+    sources: List[RAGSource] = Field(default_factory=list)

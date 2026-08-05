@@ -1,30 +1,20 @@
 # frontend(Streamlit) 실행에 필요한 의존성.
-# YOLO/ResNet18 추론은 더 이상 이 프로세스에서 하지 않으므로 ultralytics는
-# 필요 없음 — backend/requirements.txt 참고.
+#
+# 이 프로세스는 모델을 하나도 직접 로드하지 않습니다.
+#   - 진단(YOLO + ResNet18) -> backend /diagnose
+#   - 견적(단가표 조회)      -> backend /estimate  (실패 시 로컬 단가표.json 폴백)
+#   - AI 상담(LLM)           -> backend /chat      (Ollama 컨테이너)
+#   - 복원 예상 이미지       -> backend /repair-preview (OpenAI Image API)
+# 덕분에 torch / ultralytics / transformers 가 전부 빠지고
+# 이미지가 약 6GB -> 400MB대로 줄었습니다.
 
 streamlit>=1.60  # width= 파라미터(use_container_width 대체) 지원 버전
 pandas>=2.0
 numpy>=1.24
-opencv-python>=4.8
+opencv-python-headless>=4.8  # 박스 그리기/리사이즈용. headless라 X11 불필요
 Pillow>=10.0
 requests>=2.31
+python-dotenv>=1.0
 folium>=0.20
 streamlit-folium>=0.27
-
-# repair_inpaint.py("복원 예상" 기능)가 이 프로세스 안에서 직접 로드되고
-# 있어서 당장은 필요함. 이것도 backend로 옮기면 제거 가능 (추후 과제).
-torch>=2.0
-torchvision>=0.15
-
-# AI 상담(RAGS.py, Qwen2.5-7B-Instruct)이 이 프로세스 안에서 직접 로드됨 —
-# app.py가 시작할 때부터 바로 import하므로 필수. backend /chat이 완성되면
-# call_chat_api()로 교체하고 이 의존성들은 제거할 예정 (별도 과제).
-transformers>=4.40
-accelerate>=0.30
-bitsandbytes>=0.43  # load_consult_llm()의 4bit 양자화 로드(low_vram=True)에 필요
-
-# repair_inpaint.py 상단 안내 참고 — 필요 시 설치
-# diffusers
-# safetensors
-# sentencepiece
-# protobuf
+openpyxl>=3.1  # 진단 결과 Excel 다운로드

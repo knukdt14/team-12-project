@@ -21,5 +21,8 @@ faiss-cpu>=1.8
 # LLM 클라이언트 (services/llm_client.py, Ollama REST 호출)
 requests>=2.31
 
+# AI 복원 예상 이미지 (services/image_restorer.py, OpenAI Image API)
+openai>=2.0,<3
+
 # 정비소 검색 (routers/repair_shops.py, 카카오 로컬 API)
 python-dotenv>=1.0

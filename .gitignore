@@ -60,3 +60,9 @@ damage_type_crops/
 
 # 클로드 규칙 관련
 Claude.md
+# RAG 벡터 인덱스 — ai/build_vectorstore.py로 언제든 재생성 가능.
+# Docker 이미지 빌드 시점에도 자동 생성되므로 git에 올리지 않는다.
+backend/data/vectorstore/
+
+# HuggingFace 모델 캐시
+**/.cache/huggingface/

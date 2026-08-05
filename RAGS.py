@@ -1,5 +1,10 @@
-"""
-AI 수리 상담 모듈
+"""레거시 보관 파일 — 현재 애플리케이션에서는 import하지 않습니다.
+
+활성 상담 경로는 ``backend/services/rag.py``와
+``backend/services/llm_client.py``입니다. 아래 코드는 초기 Qwen 실험을 재현하기
+위해 남아 있으며 새 기능이나 설정을 이 파일에 추가하지 마세요.
+
+AI 수리 상담 모듈(초기 실험)
 - YOLO 진단 결과 + 단가표 견적 결과를 컨텍스트로 주입하고,
   로컬 LLM(Qwen2.5-7B-Instruct, 4bit)으로 사용자 질문에 실제로 답변합니다.
 
@@ -8,9 +13,8 @@ AI 수리 상담 모듈
   전혀 쓰지 않고, 진단·견적이 있으면 항상 같은 템플릿 문장을 리턴하고
   없으면 항상 같은 안내 문구를 리턴했습니다. 그래서 질문을 뭘로 바꿔도
   답이 똑같았습니다.
-- repair_inpaint.py가 FLUX Kontext를 "st.cache_resource로 캐싱 + 필요할 때만
-  로드 + 생성 후 GPU 메모리 정리" 패턴으로 관리하는 것과 동일한 구조를
-  따라서, 이 모듈도 Qwen을 그렇게 관리합니다.
+- 당시 Streamlit 프로세스에서 생성형 모델을 지연 로드하던 패턴을 따라,
+  이 모듈도 Qwen을 캐싱하고 생성 후 GPU 캐시를 정리했습니다.
 
 주의할 점:
 - 이미 YOLO + FLUX Kontext가 같은 프로세스/GPU를 쓰고 있어서, Qwen까지
@@ -112,7 +116,7 @@ def load_consult_model(model_id: str = DEFAULT_MODEL_ID, low_vram: bool = True):
 
 
 def free_gpu_memory():
-    """생성 직후 남은 VRAM 파편/캐시를 정리 (repair_inpaint.py와 동일한 이유)."""
+    """생성 직후 남은 VRAM 파편/캐시를 정리(레거시 실험용)."""
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
