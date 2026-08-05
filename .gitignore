@@ -13,6 +13,12 @@ env/
 # backend/data/단가표.json이 한 번도 git에 커밋되지 못하는 버그가 있었음.
 /data/
 
+# backend/data/는 위 규칙(data/)에 걸리지만, 단가표.json은 코드가 참조하는
+# 작은 설정성 데이터라 예외로 git에 포함
+!backend/data/
+backend/data/*
+!backend/data/단가표.json
+
 # Pretrained base weights (auto-downloaded by ultralytics on first run)
 yolo11n.pt
 yolo26n.pt
