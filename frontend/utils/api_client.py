@@ -95,7 +95,7 @@ def call_repair_shops_api(x, y, radius, query="자동차 정비소", timeout=10)
     return response.json()
 
 
-def call_chat_api(session_id, message, diagnosis_summary="", history=None, timeout=300):
+def call_chat_api(session_id, message, diagnosis_summary="", history=None, timeout=150):
     """backend의 /chat을 호출해 {"answer", "used_llm"}을 반환한다.
 
     diagnosis_summary: 이번 세션의 진단·견적 요약 문자열.

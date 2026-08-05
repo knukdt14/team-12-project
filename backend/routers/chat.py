@@ -31,6 +31,7 @@ PRICE_RANGE_PATTERN = re.compile(
     r"(?:~|〜|－|-|–|—|에서)\s*"
     r"(?P<second>\d[\d,\s]*(?:\.\d+)?)\s*(?P<second_man>만)?\s*원"
 )
+PRICE_QUESTION_PATTERN = re.compile(r"(?:얼마|비용|가격|금액)")
 HANZI_PATTERN = re.compile(r"[一-鿿]")
 KOREAN_ONLY_REMINDER = (
     "\n\n직전 답변에 한자 또는 중국어가 섞였습니다. "
@@ -80,6 +81,39 @@ def _money_values(text: str) -> set[int]:
             continue
         values.add(_to_won(match.group("number"), bool(match.group("man"))))
     return values
+
+
+def _summary_field(summary: str, label: str) -> str:
+    prefix = f"- {label}:"
+    for line in summary.splitlines():
+        if line.strip().startswith(prefix):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def _rule_based_price_answer(message: str, diagnosis_summary: str) -> str | None:
+    """가격 질문은 느린 LLM 대신 세션의 확정 단가표 값으로 즉시 답한다."""
+    if not PRICE_QUESTION_PATTERN.search(message):
+        return None
+
+    values = sorted(_money_values(diagnosis_summary))
+    if not values:
+        return NO_PRICE_ANSWER
+
+    minimum, maximum = values[0], values[-1]
+    if minimum == maximum:
+        price_text = f"**{minimum:,}원**"
+    else:
+        price_text = f"**{minimum:,}원 ~ {maximum:,}원**"
+
+    part = _summary_field(diagnosis_summary, "부위")
+    method = _summary_field(diagnosis_summary, "수리 방식")
+    subject = f"{part}의 " if part else ""
+    answer = f"현재 진단과 프로젝트 단가표 기준 {subject}예상 비용은 {price_text}입니다."
+    if method:
+        answer += f" 적용된 수리 방식은 **{method}**입니다."
+    answer += " 추가 손상·탈부착·부품 옵션은 포함되지 않을 수 있어 실물 점검 후 달라질 수 있습니다."
+    return answer
 
 
 def _violates_price_guardrail(answer: str, diagnosis_summary: str) -> bool:
@@ -138,6 +172,19 @@ def _source_models(chunks: list[rag.RetrievedChunk]) -> list[RAGSource]:
 async def chat(payload: ChatRequest):
     history = [item.model_dump() for item in payload.history[-6:]]
     summary = payload.diagnosis_summary.strip()
+
+    # 가격 질문은 LLM이 중간 금액을 새로 만들도록 기다리지 않고, 프론트가 전달한
+    # 단가표 범위를 그대로 반환한다. RAG보다 먼저 처리해 첫 검색 초기화도 기다리지 않는다.
+    rule_based_answer = _rule_based_price_answer(payload.message, summary)
+    if rule_based_answer is not None:
+        return ChatResponse(
+            answer=f"{rule_based_answer.rstrip()}\n\n_{DISCLAIMER}_",
+            used_llm=False,
+            answer_mode="rule_based",
+            rag_used=False,
+            sources=[],
+        )
+
     chunks = await run_in_threadpool(
         partial(
             rag.search,
@@ -181,6 +228,7 @@ async def chat(payload: ChatRequest):
     return ChatResponse(
         answer=answer,
         used_llm=used_llm,
+        answer_mode="llm" if used_llm else "rag_fallback",
         rag_used=bool(chunks),
         sources=_source_models(chunks),
     )
