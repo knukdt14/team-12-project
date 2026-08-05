@@ -56,6 +56,14 @@ class ChatGuardrailTests(unittest.TestCase):
         self.assertIn("범퍼 교환", answer)
         self.assertNotIn("375,000", answer)
 
+    def test_natural_repair_cost_question_uses_price_path(self):
+        answer = chat._rule_based_price_answer(
+            "수리비는 어느 정도 나올까?",
+            "- 예상 비용: 250,000원 ~ 350,000원",
+        )
+
+        self.assertIn("250,000원 ~ 350,000원", answer)
+
     def test_price_question_without_estimate_returns_no_price_answer(self):
         answer = chat._rule_based_price_answer(
             "교체 가격이 얼마인가요?",

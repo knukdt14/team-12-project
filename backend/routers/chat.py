@@ -31,7 +31,7 @@ PRICE_RANGE_PATTERN = re.compile(
     r"(?:~|〜|－|-|–|—|에서)\s*"
     r"(?P<second>\d[\d,\s]*(?:\.\d+)?)\s*(?P<second_man>만)?\s*원"
 )
-PRICE_QUESTION_PATTERN = re.compile(r"(?:얼마|비용|가격|금액)")
+PRICE_QUESTION_PATTERN = re.compile(r"(?:얼마|비용|가격|금액|수리\s*비)")
 HANZI_PATTERN = re.compile(r"[一-鿿]")
 KOREAN_ONLY_REMINDER = (
     "\n\n직전 답변에 한자 또는 중국어가 섞였습니다. "
