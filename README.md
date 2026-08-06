@@ -135,17 +135,45 @@ streamlit run frontend/app.py
 
 > Render 무료 티어는 15분간 요청이 없으면 서버가 잠들어서, 첫 요청 응답이 30초~1분 정도 걸릴 수 있습니다.
 
-### 방법 3 — Docker Compose로 실행 (진단 포함, 컨테이너 격리)
+### 방법 3 — Docker Desktop / Docker Hub로 실행 (진단 포함, 컨테이너 격리)
+
+팀 공유용 이미지는 Docker Hub에 공개 게시되어 있습니다.
+
+- [`yusae/cardoc-backend:1.0`](https://hub.docker.com/r/yusae/cardoc-backend/tags)
+- [`yusae/cardoc-frontend:1.0`](https://hub.docker.com/r/yusae/cardoc-frontend/tags)
+- LLM은 공식 이미지 `ollama/ollama:latest`를 사용합니다.
+
+GitHub에서 저장소를 받은 팀원은 프로젝트 루트에서 다음과 같이 실행합니다.
 
 ```bash
-docker compose up --build
+# 최초 1회: .env.example을 .env로 복사하고 필요한 개인 API 키를 입력
+# PowerShell
+Copy-Item .env.example .env
+
+# macOS / Linux / Git Bash
+# cp .env.example .env
+
+# 게시된 이미지를 받고, 로컬 빌드 없이 실행
+docker compose pull backend frontend
+docker compose up -d --no-build
+docker compose ps
 ```
 
 - Streamlit UI: http://localhost:8501
 - FastAPI docs: http://localhost:8000/docs
-- backend / frontend / llm(Ollama) 3개 컨테이너가 함께 뜨며, `.env`가 없어도 진단·견적·상담은 기본값으로 동작합니다.
+- backend / frontend / llm(Ollama) 3개 컨테이너가 함께 실행됩니다.
+- 첫 실행에서는 Ollama가 기본 LLM 모델을 내려받으므로 인터넷 속도에 따라 수 분 걸릴 수 있습니다. 상태는 `docker compose logs -f llm`로 확인합니다.
 - 사진 복원은 `OPENAI_API_KEY`, 정비소 검색은 `KAKAO_REST_API_KEY`가 있어야 동작합니다(`.env.example` 참고).
-- 자세한 구성은 [docker-compose.yml](docker-compose.yml) 상단 주석 참고.
+- 종료는 `docker compose down`, LLM 모델과 앱 로그 볼륨까지 초기화할 때만 `docker compose down -v`를 사용합니다.
+
+소스를 수정한 뒤 이미지를 직접 다시 만들 때는 다음 명령을 사용합니다.
+
+```bash
+docker compose build backend frontend
+docker compose up -d
+```
+
+Docker Hub 게시 권한이 있는 관리자는 `.env`의 `DOCKERHUB_USERNAME`과 `CARDOC_IMAGE_TAG`를 확인한 뒤 `docker compose push backend frontend`로 새 버전을 게시할 수 있습니다. `.env` 자체는 Git 및 Docker 빌드에서 제외되므로 커밋하지 않습니다. 자세한 구성은 [docker-compose.yml](docker-compose.yml) 상단 주석을 참고하세요.
 
 ## 스크립트별 용도 및 재학습 방법
 
