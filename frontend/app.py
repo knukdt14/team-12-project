@@ -29,13 +29,10 @@ from streamlit_folium import st_folium
 
 from PIL import Image
 
-# frontend/app.py는 저장소 루트 밖(frontend/)으로 이동했지만,
-# src/preprocessing.py를 가져오기 위해 루트를 sys.path에 추가한다.
+# 단가표.json / 로고 / 로그 등 저장소 루트에 남아있는 자원을 참조하기 위한 경로.
 ROOT_DIR = Path(__file__).resolve().parent.parent
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
 
-from src.preprocessing import draw_detections, resize_for_display
+from utils.preprocessing import draw_detections, resize_for_display
 from utils.api_client import (
     call_chat_api,
     call_diagnose_api,
@@ -55,9 +52,9 @@ from utils.api_client import (
 
 
 # ---------------------------------------------------------
-# 기본 경로 (단가표.json, 로고, 로그 등은 여전히 저장소 루트에 있음)
+# 기본 경로 (단가표.json은 backend/data/ 원본 하나만 두고 frontend가 폴백용으로 같이 읽음)
 # ---------------------------------------------------------
-PRICE_TABLE_PATH = ROOT_DIR / "단가표.json"
+PRICE_TABLE_PATH = ROOT_DIR / "backend/data/단가표.json"
 LOGO_PATH = ROOT_DIR / "docs/ajin_logo.png"
 
 # 대시보드 집계용 진단 이력 누적 로그 (견적 생성 시마다 1행씩 append).
