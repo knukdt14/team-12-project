@@ -88,8 +88,9 @@ services:
       # ★ frontend/backend 분리의 핵심. 하드코딩 localhost 금지.
       #   utils/api_client.py가 이 변수를 읽습니다.
       - BACKEND_BASE_URL=http://backend:8000
-      # 지도/견적 API도 외부 Render가 아닌 같은 Compose의 backend로 연결합니다.
-      - MAP_BACKEND_BASE_URL=http://backend:8000
+      # 지도/견적 API는 로컬 backend가 아니라 main 정책대로 Render(main_light.py)를 씁니다.
+      # 로컬 backend로 직접 시험하려면 아래 주석을 해제하세요.
+      # - MAP_BACKEND_BASE_URL=http://backend:8000
       - REPAIR_API_TOKEN=${REPAIR_API_TOKEN:-}
       - LOG_DIR=/app/logs
       - PYTHONUNBUFFERED=1
