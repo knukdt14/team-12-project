@@ -1,14 +1,23 @@
-# 차체 도장·외관 불량 자동 검출 시스템
+# CarDoc — 차체 외관 손상 진단·견적·상담 AI 서비스
 
-YOLO + OpenCV + pandas를 활용한 차체 외관 불량 검출 포트폴리오 프로젝트.
+YOLO(부위 탐지) + ResNet18(손상 종류 분류)로 차체 외관 손상을 자동 검출하고,
+견적 산출·정비소 검색·AI 상담·사진 복원까지 이어지는 FastAPI + Streamlit 웹 서비스.
 1단계(부위 탐지) + 2단계(손상 종류 분류) 구조로, "어디에 + 어떤 손상"까지 알 수 있음.
 
 ## 기술 스택
+**AI/모델**
 - YOLO (ultralytics, 1단계 부위 탐지) — 불량 위치 탐지 + 부위 분류
 - ResNet18 (torchvision, 2단계 손상 종류 분류) — 찌그러짐/스크래치/균열 등 구분 ([docs/DAMAGE_TYPE_CLASSIFIER.md](docs/DAMAGE_TYPE_CLASSIFIER.md))
+- OpenAI Image API — 손상 부위 사진 복원(inpainting)
+- Ollama(exaone3.5) + LangChain RAG(FAISS) — 정비 지식 기반 AI 상담 챗봇
 - OpenCV — 결과 시각화
 - pandas / matplotlib — 불량률 통계 분석
-- Streamlit — 데모 UI
+
+**서비스/인프라**
+- FastAPI — 진단/견적/지도/상담 API 백엔드 (`backend/`)
+- Streamlit — 데모 UI 프론트엔드 (`frontend/`)
+- Docker / Docker Compose — backend·frontend·llm(Ollama) 컨테이너 통합 실행
+- Render — 경량 백엔드(`main_light.py`) 배포
 
 ## 모델 성능 요약
 
@@ -126,6 +135,18 @@ streamlit run frontend/app.py
 
 > Render 무료 티어는 15분간 요청이 없으면 서버가 잠들어서, 첫 요청 응답이 30초~1분 정도 걸릴 수 있습니다.
 
+### 방법 3 — Docker Compose로 실행 (진단 포함, 컨테이너 격리)
+
+```bash
+docker compose up --build
+```
+
+- Streamlit UI: http://localhost:8501
+- FastAPI docs: http://localhost:8000/docs
+- backend / frontend / llm(Ollama) 3개 컨테이너가 함께 뜨며, `.env`가 없어도 진단·견적·상담은 기본값으로 동작합니다.
+- 사진 복원은 `OPENAI_API_KEY`, 정비소 검색은 `KAKAO_REST_API_KEY`가 있어야 동작합니다(`.env.example` 참고).
+- 자세한 구성은 [docker-compose.yml](docker-compose.yml) 상단 주석 참고.
+
 ## 스크립트별 용도 및 재학습 방법
 
 이 프로젝트는 **서로 독립적인 두 모델**로 구성됩니다. `app.py`가 둘 다 사용하지만, 학습 파이프라인은 완전히 분리되어 있어서 **처음부터 다시 학습하려면 두 파이프라인을 각각 실행해야 합니다** — 한쪽만 돌리면 그 모델만 갱신됩니다.
@@ -168,7 +189,9 @@ team-12-project/
 │   ├── app.py                       # 메인 데모 UI (진단/견적/지도/AI 상담)
 │   ├── requirements.txt
 │   ├── Dockerfile
-│   └── utils/api_client.py          # backend 호출 전담 모듈
+│   └── utils/
+│       ├── api_client.py            # backend 호출 전담 모듈
+│       └── preprocessing.py         # OpenCV 시각화 보조 (draw_detections, resize_for_display)
 ├── backend/                      # FastAPI 백엔드
 │   ├── main.py                      # 전체 라우터(diagnose/estimate/repair_shops/chat) — 로컬 개발용
 │   ├── main_light.py                # estimate/repair_shops만 포함한 경량 버전 — Render 배포용
@@ -179,9 +202,6 @@ team-12-project/
 ├── ai/                            # RAG 지식베이스
 │   ├── docs/                        # 정비 지식 markdown 문서
 │   └── build_vectorstore.py         # FAISS 인덱스 빌드 스크립트
-├── RAGS.py                        # AI 상담(Qwen2.5-7B-Instruct) — frontend가 직접 로드
-├── repair_inpaint.py              # AI 복원 이미지 생성 (FLUX.1-Kontext-dev, 보류 중)
-├── src/preprocessing.py           # OpenCV 시각화 보조
 ├── scripts/                       # 학습/데이터 처리 스크립트 (항상 프로젝트 루트에서 실행)
 │   ├── train.py                      # YOLO 학습 (1단계 부위 탐지)
 │   ├── augment.py                    # 클래스 불균형 보완용 이미지 증강
@@ -195,13 +215,23 @@ team-12-project/
 │   ├── MODEL_COMPARISON.md           # YOLO11n vs YOLO26n 비교
 │   ├── DAMAGE_TYPE_CLASSIFIER.md     # 2단계 분류기 상세 문서
 │   ├── DEFECT_CLASSES.md             # 16개 탐지 클래스 정리
-│   ├── CHANGELOG.md                  # 개발 변경 이력
-│   └── Claude.md                     # Claude Code 작업 규칙
+│   └── CHANGELOG.md                  # 개발 변경 이력
 ├── data/                          # (미포함, 별도 다운로드) 병합·재분할된 학습 데이터
 ├── results/                       # 결과 보관용
 ├── runs/                          # 학습 결과 (best.pt, 그래프) — 배포 모델만 git에 포함
 ├── analysis.ipynb                 # 불량률 분석
+├── tests/                         # 백엔드 단위 테스트 (chat guardrail/RAG/detector/repair_preview)
+├── docker-compose.yml             # backend+frontend+llm(Ollama) 통합 실행
 ├── run_dev.sh / run_dev.bat       # 로컬에서 backend+frontend 한 번에 실행
 ├── .env.example                   # 환경변수 템플릿
 └── requirements.txt                # scripts/, analysis.ipynb 재현용 (서버 실행용은 frontend·backend 하위 참고)
 ```
+
+## 테스트
+
+```bash
+pip install -r backend/requirements.txt pytest
+pytest tests/ -v
+```
+
+`tests/`는 backend의 `routers`/`services`를 직접 임포트하므로 실행 전 `backend/requirements.txt` 설치가 필요합니다.
