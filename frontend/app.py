@@ -12,6 +12,9 @@ import hashlib
 import io
 import json
 import os
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -1312,26 +1315,41 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
             st.markdown(question)
 
         with st.chat_message("assistant"):
-            with st.spinner("답변을 생성하는 중..."):
-                try:
-                    result = call_chat_api(
-                        session_id=st.session_state.get(
-                            "session_id", "streamlit-session"
-                        ),
-                        message=question,
-                        # 진단·견적 요약을 같이 보내야 LLM이 금액을 인용할 수 있습니다.
-                        diagnosis_summary=build_diagnosis_summary(diagnosis, estimate),
-                        history=[
-                            {
-                                "role": msg["role"],
-                                "content": msg["content"][:2000],
-                            }
-                            for msg in st.session_state.messages[:-1][-8:]
-                        ],
+            progress = st.empty()
+            started_at = time.monotonic()
+            executor = ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(
+                call_chat_api,
+                session_id=st.session_state.get(
+                    "session_id", "streamlit-session"
+                ),
+                message=question,
+                diagnosis_summary=build_diagnosis_summary(diagnosis, estimate),
+                history=[
+                    {
+                        "role": msg["role"],
+                        "content": msg["content"][:2000],
+                    }
+                    for msg in st.session_state.messages[:-1][-8:]
+                ],
+            )
+            try:
+                while not future.done():
+                    elapsed = int(time.monotonic() - started_at)
+                    progress.caption(
+                        f"답변을 생성하는 중입니다 · {elapsed}초 "
+                        "(Codespaces CPU에서는 일반 질문이 약 1분 걸릴 수 있습니다)"
                     )
+                    time.sleep(2)
+
+                try:
+                    result = future.result()
                     answer = result.get("answer", "답변을 받지 못했습니다.")
                     answer_sources = result.get("sources", [])
-                    if not result.get("used_llm", True):
+                    answer_mode = result.get("answer_mode")
+                    if answer_mode == "rag_fallback" or (
+                        answer_mode is None and not result.get("used_llm", True)
+                    ):
                         # 모델 다운로드 중이거나 답변이 가드레일에 걸린 경우.
                         # 사용자가 품질 저하 이유를 알 수 있게 표시합니다.
                         answer += (
@@ -1345,6 +1363,9 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
                         f"({type(e).__name__}: {e})\n\n"
                         "`docker compose logs -f backend` 로 상태를 확인해주세요."
                     )
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
+                progress.empty()
 
             st.markdown(answer)
             if answer_sources:

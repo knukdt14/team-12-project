@@ -1,11 +1,14 @@
+import asyncio
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from routers import chat  # noqa: E402
+from schemas import ChatRequest  # noqa: E402
 from services.rag import RetrievedChunk  # noqa: E402
 
 
@@ -39,6 +42,63 @@ class ChatGuardrailTests(unittest.TestCase):
         self.assertIn("고정부가 깨지면", answer)
         self.assertNotIn("300,000", answer)
         self.assertNotIn("600,000", answer)
+
+    def test_price_question_uses_exact_diagnosis_range_without_llm(self):
+        summary = (
+            "- 부위: 전방 범퍼\n"
+            "- 손상 종류: 균열\n"
+            "- 수리 방식: 범퍼 교환\n"
+            "- 예상 비용: 300,000원 ~ 450,000원"
+        )
+        answer = chat._rule_based_price_answer("예상 비용은 얼마인가요?", summary)
+
+        self.assertIn("300,000원 ~ 450,000원", answer)
+        self.assertIn("범퍼 교환", answer)
+        self.assertNotIn("375,000", answer)
+
+    def test_natural_repair_cost_question_uses_price_path(self):
+        answer = chat._rule_based_price_answer(
+            "수리비는 어느 정도 나올까?",
+            "- 예상 비용: 250,000원 ~ 350,000원",
+        )
+
+        self.assertIn("250,000원 ~ 350,000원", answer)
+
+    def test_price_question_without_estimate_returns_no_price_answer(self):
+        answer = chat._rule_based_price_answer(
+            "교체 가격이 얼마인가요?",
+            "- 부위: 루프\n- 손상 종류: 찌그러짐",
+        )
+        self.assertEqual(answer, chat.NO_PRICE_ANSWER)
+
+    def test_non_price_question_still_uses_llm_path(self):
+        answer = chat._rule_based_price_answer(
+            "이 상태에서 운전해도 되나요?",
+            "- 예상 비용: 300,000원 ~ 450,000원",
+        )
+        self.assertIsNone(answer)
+
+    def test_price_chat_skips_rag_and_llm(self):
+        payload = ChatRequest(
+            session_id="test-session",
+            message="예상 비용은 얼마인가요?",
+            diagnosis_summary=(
+                "- 부위: 전방 범퍼\n"
+                "- 수리 방식: 범퍼 교환\n"
+                "- 예상 비용: 300,000원 ~ 450,000원"
+            ),
+        )
+
+        with (
+            patch.object(chat.rag, "search") as rag_search,
+            patch.object(chat.llm_client, "generate") as llm_generate,
+        ):
+            response = asyncio.run(chat.chat(payload))
+
+        self.assertEqual(response.answer_mode, "rule_based")
+        self.assertIn("300,000원 ~ 450,000원", response.answer)
+        rag_search.assert_not_called()
+        llm_generate.assert_not_called()
 
 
 if __name__ == "__main__":
