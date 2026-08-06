@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 
 import folium
 from streamlit_folium import st_folium
@@ -183,6 +184,160 @@ st.markdown(
         font-weight:900;
         line-height:1.25;
     }
+    .summary-card {
+        border:1px solid #E5E7EB;
+        border-radius:16px;
+        padding:18px 22px;
+        background:#FFFFFF;
+        margin:12px 0 8px 0;
+    }
+    .summary-row {
+        display:flex;
+        justify-content:space-between;
+        align-items:center;
+        padding:10px 0;
+        border-bottom:1px solid #F1F5F9;
+    }
+    .summary-row-last {
+        border-bottom:none;
+    }
+    .summary-label {
+        color:#6B7280;
+        font-size:14px;
+    }
+    .summary-value {
+        font-size:16px;
+        font-weight:700;
+    }
+    .summary-accent {
+        color:#2563EB;
+    }
+    .summary-price {
+        font-size:22px;
+        font-weight:900;
+    }
+    .nav-link-btn {
+        display:block;
+        text-align:center;
+        padding:0.5rem 1rem;
+        border:1px solid rgba(37,99,235,0.3);
+        border-radius:10px;
+        color:#2563EB;
+        text-decoration:none;
+        font-size:14px;
+        font-weight:500;
+        transition:background 0.15s ease, border-color 0.15s ease;
+    }
+    .nav-link-btn:hover {
+        background:#EFF6FF;
+        border-color:#2563EB;
+        color:#2563EB;
+    }
+    section[data-testid="stSidebar"] div[data-testid="stElementContainer"]:has(div[data-testid="stRadioGroup"]) {
+        width:100% !important;
+    }
+    section[data-testid="stSidebar"] div[data-testid="stRadioGroup"] {
+        display:flex;
+        flex-direction:column;
+        gap:4px;
+        width:100%;
+    }
+    section[data-testid="stSidebar"] label[data-testid="stRadioOption"] {
+        padding:13px 16px;
+        border-radius:10px;
+        transition:background 0.15s ease;
+        cursor:pointer;
+        width:100%;
+    }
+    section[data-testid="stSidebar"] label[data-testid="stRadioOption"] > div > div > div:first-child {
+        display:none;
+    }
+    section[data-testid="stSidebar"] label[data-testid="stRadioOption"] div[data-testid="stMarkdownContainer"] p {
+        font-size:16px;
+        font-weight:500;
+        color:#374151;
+        margin:0;
+    }
+    section[data-testid="stSidebar"] label[data-testid="stRadioOption"]:hover {
+        background:rgba(37,99,235,0.06);
+    }
+    section[data-testid="stSidebar"] label[data-testid="stRadioOption"][data-selected="true"] {
+        background:#EFF6FF;
+        box-shadow:inset 3px 0 0 #2563EB;
+    }
+    section[data-testid="stSidebar"] label[data-testid="stRadioOption"][data-selected="true"] div[data-testid="stMarkdownContainer"] p {
+        color:#2563EB;
+        font-weight:700;
+    }
+    .scroll-top-btn {
+        position:fixed;
+        right:24px;
+        bottom:24px;
+        width:44px;
+        height:44px;
+        border-radius:50%;
+        background:#FFFFFF;
+        border:1px solid rgba(49,51,63,0.2);
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        font-size:20px;
+        color:inherit;
+        text-decoration:none;
+        box-shadow:0 2px 8px rgba(0,0,0,0.15);
+        z-index:999;
+    }
+    .scroll-top-btn:hover {
+        border-color:rgba(49,51,63,0.5);
+        color:inherit;
+    }
+    div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] > div[data-testid="stChatInput"]) {
+        display:flex;
+        flex-direction:column;
+    }
+    div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] > div[data-testid="stChatInput"])
+        > div[data-testid="stElementContainer"]:has(div[data-testid="stChatInput"]) {
+        margin-top:auto;
+    }
+    button[data-testid="stBaseButton-secondary"],
+    button[data-testid="stBaseButton-primary"] {
+        border-radius:10px;
+        font-weight:500;
+        transition:background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    }
+    button[data-testid="stBaseButton-secondary"] {
+        border:1px solid rgba(37,99,235,0.3);
+        color:#2563EB;
+        background:#FFFFFF;
+    }
+    button[data-testid="stBaseButton-secondary"]:hover {
+        background:#EFF6FF;
+        border-color:#2563EB;
+        color:#2563EB;
+    }
+    button[data-testid="stBaseButton-primary"] {
+        background:#2563EB;
+        border:1px solid #2563EB;
+        color:#FFFFFF;
+    }
+    button[data-testid="stBaseButton-primary"]:hover {
+        background:#1D4ED8;
+        border-color:#1D4ED8;
+        color:#FFFFFF;
+    }
+    div[data-testid="stAlertContainer"] {
+        border-radius:12px;
+    }
+    div[data-testid="stMetric"] {
+        background:#FFFFFF;
+        border:1px solid #E5E7EB;
+        border-radius:12px;
+        padding:14px 16px;
+    }
+    div[data-testid="stExpander"] details {
+        border-radius:12px;
+        border-color:#E5E7EB;
+    }
 </style>
 """,
     unsafe_allow_html=True,
@@ -265,6 +420,74 @@ def render_llm_status():
         )
     else:
         st.warning("RAG 정비 문서를 불러오지 못했습니다.")
+
+
+def _to_data_uri(image, fmt="JPEG"):
+    """PIL Image 또는 BGR numpy 배열을 <img src=...>에 바로 쓸 data URI로 변환."""
+    if isinstance(image, np.ndarray):
+        image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    buf = io.BytesIO()
+    image.convert("RGB").save(buf, format=fmt, quality=88)
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    mime = "image/png" if fmt.upper() == "PNG" else "image/jpeg"
+    return f"data:{mime};base64,{b64}"
+
+
+def render_before_after_slider(before_image, after_image, height=380):
+    """복원 전(before)/후(after) 이미지를 드래그 슬라이더로 비교하는 컴포넌트.
+
+    before/after는 PIL Image 또는 BGR numpy 배열 둘 다 받는다. 폭 기준
+    비율(aspect-ratio)은 after 이미지 크기를 따른다 — 복원 API가 돌려주는
+    이미지가 최종적으로 보여줄 대상이라 여기에 맞추는 게 자연스럽다.
+    """
+    before_uri = _to_data_uri(before_image)
+    after_uri = _to_data_uri(after_image)
+
+    if isinstance(after_image, np.ndarray):
+        h, w = after_image.shape[:2]
+    else:
+        w, h = after_image.size
+    aspect = f"{w} / {h}"
+
+    html = f"""
+<div id="baRoot" style="position:relative;width:100%;aspect-ratio:{aspect};
+    border-radius:12px;overflow:hidden;background:#F1F5F9;user-select:none;">
+  <img src="{after_uri}" draggable="false"
+       style="display:block;width:100%;height:100%;object-fit:cover;">
+  <div id="baBeforeClip" style="position:absolute;inset:0;clip-path:inset(0 50% 0 0);">
+    <img src="{before_uri}" draggable="false"
+         style="display:block;width:100%;height:100%;object-fit:cover;">
+  </div>
+  <div id="baHandle" style="position:absolute;top:0;bottom:0;left:50%;width:3px;
+      background:#FFFFFF;box-shadow:0 0 6px rgba(0,0,0,.45);
+      transform:translateX(-50%);pointer-events:none;">
+    <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+        width:30px;height:30px;border-radius:50%;background:#FFFFFF;
+        box-shadow:0 1px 4px rgba(0,0,0,.4);display:flex;align-items:center;
+        justify-content:center;font-size:13px;color:#374151;">↔</div>
+  </div>
+  <span style="position:absolute;top:10px;left:10px;background:rgba(17,24,39,.6);
+      color:#fff;font-size:12px;padding:3px 10px;border-radius:999px;">복원 전</span>
+  <span style="position:absolute;top:10px;right:10px;background:rgba(37,99,235,.85);
+      color:#fff;font-size:12px;padding:3px 10px;border-radius:999px;">AI 복원 후</span>
+  <input id="baRange" type="range" min="0" max="100" value="50"
+      style="position:absolute;inset:0;width:100%;height:100%;margin:0;
+      opacity:0;cursor:ew-resize;">
+</div>
+<script>
+(function() {{
+  const range = document.getElementById('baRange');
+  const clip = document.getElementById('baBeforeClip');
+  const handle = document.getElementById('baHandle');
+  range.addEventListener('input', function() {{
+    const v = range.value;
+    clip.style.clipPath = 'inset(0 ' + (100 - v) + '% 0 0)';
+    handle.style.left = v + '%';
+  }});
+}})();
+</script>
+"""
+    components.html(html, height=height)
 
 
 # ---------------------------------------------------------
@@ -469,6 +692,9 @@ def build_excel_bytes(df):
     return buffer.getvalue()
 
 
+st.markdown('<div id="top"></div>', unsafe_allow_html=True)
+st.markdown('<a class="scroll-top-btn" href="#top">↑</a>', unsafe_allow_html=True)
+
 # ---------------------------------------------------------
 # Sidebar 메뉴 + 설정
 # ---------------------------------------------------------
@@ -493,29 +719,9 @@ with st.sidebar:
             "📄 진단 리포트",
             "📊 대시보드",
         ],
+        key="menu",
         label_visibility="collapsed",
     )
-
-    st.divider()
-    st.markdown("### ⚙️ 진단 설정")
-
-    conf_threshold = st.slider(
-        "Confidence threshold",
-        0.1, 0.9, 0.3, 0.05,
-    )
-
-    st.caption("AI 진단: backend API 연동 (YOLO + ResNet 기반 2단계 진단)")
-    st.caption("견적은 룰베이스 단가표를 사용합니다.")
-
-    st.divider()
-    st.markdown("### 🤖 AI 상담 모델")
-    render_llm_status()
-
-    st.divider()
-    if st.session_state.get("diagnosis"):
-        st.success("✅ 차량 진단 완료")
-    else:
-        st.caption("○ 차량 진단 전")
 
 
 # ---------------------------------------------------------
@@ -556,6 +762,14 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
 # 홈에서도 전체 흐름의 첫 단계로 표시
 # =========================================================
 if menu in ["🏠 홈", "📷 차량 진단"]:
+    with st.expander("⚙️ 진단 설정"):
+        conf_threshold = st.slider(
+            "Confidence threshold",
+            0.1, 0.9, 0.3, 0.05,
+        )
+        st.caption("AI 진단: backend API 연동 (YOLO + ResNet 기반 2단계 진단)")
+        st.caption("견적은 룰베이스 단가표를 사용합니다.")
+
     uploaded = st.file_uploader(
         "차체 이미지 업로드 (jpg / png)",
         type=["jpg", "jpeg", "png"],
@@ -600,20 +814,10 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
 
         st.markdown("### 🚘 AI 차량 진단 과정")
 
-        image_col1, image_col2, image_col3 = st.columns(3, gap="medium")
+        image_col1, image_col2 = st.columns(2, gap="medium")
 
         with image_col1:
-            st.markdown("#### ① 원본 차량")
-            st.image(
-                cv2.cvtColor(
-                    resize_for_display(img_bgr),
-                    cv2.COLOR_BGR2RGB,
-                ),
-                use_container_width=True,
-            )
-
-        with image_col2:
-            st.markdown("#### ② AI 파손 검출")
+            st.markdown("#### ① AI 파손 검출")
             st.image(
                 cv2.cvtColor(
                     resize_for_display(vis),
@@ -622,8 +826,8 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
                 use_container_width=True,
             )
 
-        with image_col3:
-            st.markdown("#### ③ 복원 예상")
+        with image_col2:
+            st.markdown("#### ② 복원 예상")
 
             repair_status = call_repair_preview_health()
             if repair_status is None:
@@ -686,12 +890,13 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
                     )
 
                 if st.session_state.get("generated_repair_image") is not None:
-                    st.image(
+                    render_before_after_slider(
+                        img_bgr,
                         st.session_state["generated_repair_image"],
-                        use_container_width=True,
                     )
                     st.caption(
-                        "※ OpenAI 생성형 이미지 편집 기반 시뮬레이션이며 실제 수리 "
+                        "↔ 좌우로 드래그해 복원 전/후를 비교하세요. "
+                        "OpenAI 생성형 이미지 편집 기반 시뮬레이션이며 실제 수리 "
                         "결과와 차이가 있을 수 있습니다."
                     )
 
@@ -785,6 +990,58 @@ if menu in ["🏠 홈", "📷 차량 진단"]:
                 "rows": rows,
                 "primary": primary,
             }
+
+            # 이미지 바로 아래에 놓는 한눈에 보는 요약 카드.
+            # "예상 수리 가이드"의 심각도 선택 위젯(key="severity_home")은 그대로 아래에
+            # 두고, 여기서는 그 위젯의 마지막 선택값(없으면 "중간")을 미리 읽어 견적을
+            # 조용히 한 번 더 계산한다 — 위젯을 두 번 만들지 않기 위함.
+            if menu == "🏠 홈":
+                summary_severity_ko = st.session_state.get(
+                    "severity_home", st.session_state.get("severity_ko", "중간")
+                )
+                summary_severity = SEVERITY_EN[summary_severity_ko]
+
+                if primary["part_code"] and primary["damage_code"]:
+                    summary_estimate = get_repair_estimate(
+                        part=primary["part_code"],
+                        damage_type=primary["damage_code"],
+                        severity=summary_severity,
+                    )
+
+                    if summary_estimate.get("success"):
+                        st.markdown(
+                            f"""
+<div class="summary-card">
+    <div class="summary-row">
+        <span class="summary-label">주요 손상 부위</span>
+        <span class="summary-value">{summary_estimate["part_label"]}</span>
+    </div>
+    <div class="summary-row">
+        <span class="summary-label">손상 종류</span>
+        <span class="summary-value summary-accent">{primary["damage_label"]}</span>
+    </div>
+    <div class="summary-row summary-row-last">
+        <span class="summary-label">예상 견적</span>
+        <span class="summary-price">₩ {summary_estimate["min_cost"]:,} ~ {summary_estimate["max_cost"]:,}</span>
+    </div>
+</div>
+""",
+                            unsafe_allow_html=True,
+                        )
+
+                        summary_btn1, summary_btn2 = st.columns(2)
+                        with summary_btn1:
+                            st.markdown(
+                                '<a class="nav-link-btn" href="#repair-shops-section">'
+                                "📍 정비소 찾기로 이동</a>",
+                                unsafe_allow_html=True,
+                            )
+                        with summary_btn2:
+                            st.markdown(
+                                '<a class="nav-link-btn" href="#ai-chat-section">'
+                                "💬 AI 상담하기</a>",
+                                unsafe_allow_html=True,
+                            )
 
             st.markdown("### 🔍 AI 진단 결과")
 
@@ -1040,6 +1297,7 @@ if menu == "💰 예상 견적":
 # =========================================================
 if menu in ["🏠 홈", "📍 정비소 찾기"]:
     st.divider()
+    st.markdown('<div id="repair-shops-section"></div>', unsafe_allow_html=True)
     st.markdown("### 📍 주변 자동차 정비소 찾기")
 
     st.caption(
@@ -1269,7 +1527,11 @@ if menu in ["🏠 홈", "📍 정비소 찾기"]:
 # =========================================================
 if menu in ["🏠 홈", "💬 AI 상담"]:
     st.divider()
+    st.markdown('<div id="ai-chat-section"></div>', unsafe_allow_html=True)
     st.markdown("### 💬 AI 수리 상담")
+
+    with st.expander("🤖 AI 상담 모델 상태"):
+        render_llm_status()
 
     st.caption(
         "backend /chat (RAG + LLM)에 질문을 보냅니다. 정비 지식 문서를 검색해 "
@@ -1291,8 +1553,10 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
+    chat_box = st.container(height=600, border=True)
+
     for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
+        with chat_box.chat_message(msg["role"]):
             st.markdown(msg["content"])
             if msg.get("sources"):
                 source_labels = [
@@ -1301,7 +1565,7 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
                 ]
                 st.caption("참고 문서: " + " / ".join(source_labels))
 
-    question = st.chat_input(
+    question = chat_box.chat_input(
         "예: 이 정도면 후드를 교체해야 하나요?",
         key=f"chat_input_{menu}",
     )
@@ -1311,10 +1575,10 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
             {"role": "user", "content": question}
         )
 
-        with st.chat_message("user"):
+        with chat_box.chat_message("user"):
             st.markdown(question)
 
-        with st.chat_message("assistant"):
+        with chat_box.chat_message("assistant"):
             progress = st.empty()
             started_at = time.monotonic()
             executor = ThreadPoolExecutor(max_workers=1)
