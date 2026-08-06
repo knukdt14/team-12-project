@@ -126,6 +126,43 @@ streamlit run frontend/app.py
 
 > Render 무료 티어는 15분간 요청이 없으면 서버가 잠들어서, 첫 요청 응답이 30초~1분 정도 걸릴 수 있습니다.
 
+## Docker Desktop / Docker Hub로 실행
+
+Docker Hub에는 팀 공유용 이미지가 아래 이름으로 공개 게시되어 있습니다.
+
+- [`yusae/cardoc-backend:1.0`](https://hub.docker.com/r/yusae/cardoc-backend/tags)
+- [`yusae/cardoc-frontend:1.0`](https://hub.docker.com/r/yusae/cardoc-frontend/tags)
+- LLM은 공식 이미지 `ollama/ollama:latest`를 사용합니다.
+
+GitHub에서 저장소를 받은 팀원은 프로젝트 루트에서 다음과 같이 실행합니다.
+
+```bash
+# 최초 1회: .env.example을 .env로 복사하고 필요한 개인 API 키를 입력
+# PowerShell
+Copy-Item .env.example .env
+
+# macOS / Linux / Git Bash
+# cp .env.example .env
+
+# 게시된 이미지를 받고, 로컬 빌드 없이 실행
+docker compose pull backend frontend
+docker compose up -d --no-build
+docker compose ps
+```
+
+접속 주소는 Streamlit UI `http://localhost:8501`, FastAPI 문서 `http://localhost:8000/docs`입니다. 첫 실행에서는 Ollama가 기본 LLM 모델을 내려받으므로 인터넷 속도에 따라 수 분 걸릴 수 있습니다. 상태는 `docker compose logs -f llm`로 확인합니다.
+
+종료할 때는 `docker compose down`을 사용합니다. LLM 모델과 앱 로그가 담긴 Docker 볼륨까지 초기화하려면 `docker compose down -v`를 사용하세요.
+
+소스를 수정한 뒤 이미지를 직접 다시 만들 때는 다음 명령을 사용합니다.
+
+```bash
+docker compose build backend frontend
+docker compose up -d
+```
+
+Docker Hub 게시 권한이 있는 관리자는 `.env`의 `DOCKERHUB_USERNAME`과 `CARDOC_IMAGE_TAG`를 확인한 뒤 `docker compose push backend frontend`로 새 버전을 게시할 수 있습니다. `.env` 자체는 Git 및 Docker 빌드에서 제외되므로 커밋하지 않습니다.
+
 ## 스크립트별 용도 및 재학습 방법
 
 이 프로젝트는 **서로 독립적인 두 모델**로 구성됩니다. `app.py`가 둘 다 사용하지만, 학습 파이프라인은 완전히 분리되어 있어서 **처음부터 다시 학습하려면 두 파이프라인을 각각 실행해야 합니다** — 한쪽만 돌리면 그 모델만 갱신됩니다.
