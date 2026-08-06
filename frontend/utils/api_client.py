@@ -37,9 +37,25 @@ REPAIR_PREVIEW_URL = f"{DIAGNOSE_BASE_URL}/repair-preview"
 REPAIR_PREVIEW_HEALTH_URL = f"{DIAGNOSE_BASE_URL}/health/repair-preview"
 
 ESTIMATE_URL = f"{MAP_BASE_URL}/estimate"
-GEOCODE_URL = f"{MAP_BASE_URL}/geocode"
-REPAIR_SHOPS_URL = f"{MAP_BASE_URL}/repair-shops"
 REPAIR_API_TOKEN = os.environ.get("REPAIR_API_TOKEN", "").strip()
+
+# Render(MAP_BASE_URL)가 응답하지 않을 때 재시도할 로컬 backend 주소.
+# DIAGNOSE_BASE_URL과 동일 — docker-compose 안에서는 http://backend:8000.
+LOCAL_MAP_BASE_URL = DIAGNOSE_BASE_URL
+
+
+def _get_with_local_fallback(path, params, timeout):
+    """MAP_BASE_URL(기본 Render)로 먼저 호출하고, 연결 실패 시 로컬 backend로 재시도한다."""
+    try:
+        response = requests.get(f"{MAP_BASE_URL}{path}", params=params, timeout=timeout)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException:
+        if LOCAL_MAP_BASE_URL == MAP_BASE_URL:
+            raise
+        response = requests.get(f"{LOCAL_MAP_BASE_URL}{path}", params=params, timeout=timeout)
+        response.raise_for_status()
+        return response.json()
 
 
 def call_diagnose_api(image_bytes, conf_threshold=0.3, filename="upload.jpg"):
@@ -78,21 +94,21 @@ def call_estimate_api(part, damage_type, severity, timeout=3):
 
 
 def call_geocode_api(address, timeout=10):
-    """backend의 /geocode를 호출해 {"success", "lat", "lng", ...}를 반환한다."""
-    response = requests.get(GEOCODE_URL, params={"address": address}, timeout=timeout)
-    response.raise_for_status()
-    return response.json()
+    """backend의 /geocode를 호출해 {"success", "lat", "lng", ...}를 반환한다.
+
+    Render(MAP_BASE_URL)가 응답하지 않으면 로컬 backend로 자동 재시도한다.
+    """
+    return _get_with_local_fallback("/geocode", {"address": address}, timeout)
 
 
 def call_repair_shops_api(x, y, radius, query="자동차 정비소", timeout=10):
-    """backend의 /repair-shops를 호출해 {"success", "shops", ...}를 반환한다."""
-    response = requests.get(
-        REPAIR_SHOPS_URL,
-        params={"x": x, "y": y, "radius": radius, "query": query},
-        timeout=timeout,
+    """backend의 /repair-shops를 호출해 {"success", "shops", ...}를 반환한다.
+
+    Render(MAP_BASE_URL)가 응답하지 않으면 로컬 backend로 자동 재시도한다.
+    """
+    return _get_with_local_fallback(
+        "/repair-shops", {"x": x, "y": y, "radius": radius, "query": query}, timeout
     )
-    response.raise_for_status()
-    return response.json()
 
 
 def call_chat_api(session_id, message, diagnosis_summary="", history=None, timeout=150):
