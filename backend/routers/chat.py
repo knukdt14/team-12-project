@@ -32,6 +32,10 @@ PRICE_RANGE_PATTERN = re.compile(
     r"(?P<second>\d[\d,\s]*(?:\.\d+)?)\s*(?P<second_man>만)?\s*원"
 )
 PRICE_QUESTION_PATTERN = re.compile(r"(?:얼마|비용|가격|금액|수리\s*비)")
+REPAIR_DECISION_ACTION_PATTERN = re.compile(r"(?:교체|교환|갈아)", re.IGNORECASE)
+REPAIR_DECISION_CUE_PATTERN = re.compile(
+    r"(?:해야|필요|대상|가능|하나|할까|할지|인가|맞나|되나|될까)"
+)
 HANZI_PATTERN = re.compile(r"[一-鿿]")
 KOREAN_ONLY_REMINDER = (
     "\n\n직전 답변에 한자 또는 중국어가 섞였습니다. "
@@ -116,6 +120,60 @@ def _rule_based_price_answer(message: str, diagnosis_summary: str) -> str | None
     return answer
 
 
+def _rule_based_repair_answer(message: str, diagnosis_summary: str) -> str | None:
+    """교체 여부는 세션의 확정 수리 방식으로 즉시 답해 느린 LLM을 우회한다.
+
+    사진 진단만으로 교체를 새로 판단하지 않고, 프론트가 단가표 조회를 거쳐 전달한
+    ``수리 방식``이 있을 때만 동작한다. 가격은 이 경로에서 노출하지 않는다.
+    """
+    if not (
+        REPAIR_DECISION_ACTION_PATTERN.search(message)
+        and REPAIR_DECISION_CUE_PATTERN.search(message)
+    ):
+        return None
+
+    method = _summary_field(diagnosis_summary, "수리 방식")
+    if not method:
+        return None
+
+    part = _summary_field(diagnosis_summary, "부위") or "해당 손상 부위"
+    severity = _summary_field(diagnosis_summary, "심각도").split("(", 1)[0].strip()
+    basis = (
+        f"현재 진단의 심각도 **{severity}**와 프로젝트 단가표 기준"
+        if severity
+        else "현재 진단과 프로젝트 단가표 기준"
+    )
+
+    method_lower = method.lower()
+    exchange_forbidden = any(
+        marker in method_lower for marker in ("교환 불가", "교체 불가")
+    )
+    exchange_selected = not exchange_forbidden and any(
+        marker in method_lower for marker in ("교환", "교체")
+    )
+
+    if exchange_forbidden:
+        decision = (
+            f"{basis}, **{part}**은 단순 교환 대상이 아니며 "
+            f"적용 수리 방식은 **{method}**입니다."
+        )
+    elif exchange_selected:
+        decision = (
+            f"{basis}, **{part}**은 **{method}** 대상으로 분류됩니다."
+        )
+    else:
+        decision = (
+            f"{basis}, **{part}**은 현재 교환 대상으로 분류되지 않으며 "
+            f"적용 수리 방식은 **{method}**입니다."
+        )
+
+    return (
+        f"{decision} 다만 사진 진단과 사용자 선택 심각도는 예비 판단이므로, "
+        "도장 상태·금속 늘어남·체결부·보강재·기능 손상을 실물 점검한 뒤 "
+        "최종 확정해야 합니다."
+    )
+
+
 def _violates_price_guardrail(answer: str, diagnosis_summary: str) -> bool:
     mentioned = _money_values(answer)
     if not mentioned:
@@ -185,6 +243,18 @@ async def chat(payload: ChatRequest):
             sources=[],
         )
 
+    # 교체 여부도 이미 산출된 단가표 수리 방식으로 답할 수 있으면 CPU LLM을
+    # 기다리지 않는다. Codespaces에서 긴 추론이 시간 초과돼도 핵심 판단은 유지한다.
+    repair_answer = _rule_based_repair_answer(payload.message, summary)
+    if repair_answer is not None:
+        return ChatResponse(
+            answer=f"{repair_answer.rstrip()}\n\n_{DISCLAIMER}_",
+            used_llm=False,
+            answer_mode="rule_based",
+            rag_used=False,
+            sources=[],
+        )
+
     chunks = await run_in_threadpool(
         partial(
             rag.search,
@@ -206,6 +276,7 @@ async def chat(payload: ChatRequest):
     )
 
     if answer and _has_chinese(answer):
+        print("[chat] 한자 범위 문자 감지 - 한국어 답변으로 1회 재시도")
         retry = await run_in_threadpool(
             partial(
                 llm_client.generate,
@@ -213,9 +284,14 @@ async def chat(payload: ChatRequest):
                 context_chunks=chunks,
                 diagnose_estimate_context=summary,
                 history=history,
+                timeout=llm_client.RETRY_TIMEOUT,
             )
         )
-        answer = retry if retry and not _has_chinese(retry) else None
+        if retry and not _has_chinese(retry):
+            answer = retry
+        else:
+            print("[chat] 한국어 재시도 실패 - RAG 폴백으로 전환")
+            answer = None
 
     if answer and (_is_echo(answer) or _violates_price_guardrail(answer, summary)):
         answer = None

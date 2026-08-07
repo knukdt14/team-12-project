@@ -15,9 +15,10 @@ import requests
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").strip().rstrip("/")
 MODEL_NAME = os.getenv("OLLAMA_MODEL", "exaone3.5:2.4b").strip()
-REQUEST_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "120"))
-MAX_TOKENS = int(os.getenv("OLLAMA_MAX_TOKENS", "220"))
-NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
+REQUEST_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "300"))
+RETRY_TIMEOUT = int(os.getenv("OLLAMA_RETRY_TIMEOUT", "45"))
+MAX_TOKENS = int(os.getenv("OLLAMA_MAX_TOKENS", "160"))
+NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "3072"))
 
 print(f"[llm] provider=ollama url={OLLAMA_BASE_URL} model={MODEL_NAME!r}")
 
@@ -113,6 +114,7 @@ def generate(
     context_chunks: Optional[Sequence[object]] = None,
     diagnose_estimate_context: Optional[str] = None,
     history: Optional[Sequence[Mapping[str, str]]] = None,
+    timeout: Optional[int] = None,
 ) -> Optional[str]:
     """Ollama에서 답변을 생성한다. 연결/모델 오류 시 ``None``을 반환한다."""
     prompt = _build_prompt(
@@ -142,7 +144,7 @@ def generate(
         response = requests.post(
             f"{OLLAMA_BASE_URL}/api/chat",
             json=payload,
-            timeout=REQUEST_TIMEOUT,
+            timeout=REQUEST_TIMEOUT if timeout is None else timeout,
         )
         response.raise_for_status()
         answer = (response.json().get("message") or {}).get("content", "").strip()

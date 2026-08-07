@@ -38,6 +38,7 @@ REPAIR_PREVIEW_HEALTH_URL = f"{DIAGNOSE_BASE_URL}/health/repair-preview"
 
 ESTIMATE_URL = f"{MAP_BASE_URL}/estimate"
 REPAIR_API_TOKEN = os.environ.get("REPAIR_API_TOKEN", "").strip()
+CHAT_API_TIMEOUT = int(os.environ.get("CHAT_API_TIMEOUT", "360"))
 
 # Render(MAP_BASE_URL)가 응답하지 않을 때 재시도할 로컬 backend 주소.
 # DIAGNOSE_BASE_URL과 동일 — docker-compose 안에서는 http://backend:8000.
@@ -111,7 +112,7 @@ def call_repair_shops_api(x, y, radius, query="자동차 정비소", timeout=10)
     )
 
 
-def call_chat_api(session_id, message, diagnosis_summary="", history=None, timeout=150):
+def call_chat_api(session_id, message, diagnosis_summary="", history=None, timeout=None):
     """backend의 /chat을 호출해 {"answer", "used_llm"}을 반환한다.
 
     diagnosis_summary: 이번 세션의 진단·견적 요약 문자열.
@@ -119,7 +120,8 @@ def call_chat_api(session_id, message, diagnosis_summary="", history=None, timeo
         이 값이 없으면 LLM이 인용할 금액이 없어 "정비소에 방문하세요"만
         반복하는 무의미한 답변이 나온다.
 
-    timeout이 긴 이유: LLM이 CPU 추론이라 첫 응답에 1~2분이 걸릴 수 있다.
+    timeout이 긴 이유: Codespaces CPU 추론은 첫 응답에 2분 이상 걸릴 수 있다.
+    백엔드 기본 300초와 짧은 한국어 재시도 예산을 모두 포함하도록 기본 360초다.
     """
     response = requests.post(
         CHAT_URL,
@@ -129,7 +131,7 @@ def call_chat_api(session_id, message, diagnosis_summary="", history=None, timeo
             "diagnosis_summary": diagnosis_summary,
             "history": history or [],
         },
-        timeout=timeout,
+        timeout=CHAT_API_TIMEOUT if timeout is None else timeout,
     )
     response.raise_for_status()
     return response.json()
