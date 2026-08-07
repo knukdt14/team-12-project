@@ -102,7 +102,7 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     answer: str
-    used_llm: bool = True  # False면 LLM 없이 검색 결과만으로 만든 폴백 응답
+    used_llm: bool = True  # False면 룰베이스 또는 검색 결과 기반 안전 응답
     answer_mode: Literal["llm", "rule_based", "rag_fallback"] = "llm"
     rag_used: bool = False
     sources: List[RAGSource] = Field(default_factory=list)

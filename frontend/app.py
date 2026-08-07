@@ -1338,7 +1338,7 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
                     elapsed = int(time.monotonic() - started_at)
                     progress.caption(
                         f"답변을 생성하는 중입니다 · {elapsed}초 "
-                        "(Codespaces CPU에서는 일반 질문이 약 1분 걸릴 수 있습니다)"
+                        "(Codespaces CPU에서는 첫 질문이 2분 이상 걸릴 수 있습니다)"
                     )
                     time.sleep(2)
 
@@ -1350,11 +1350,12 @@ if menu in ["🏠 홈", "💬 AI 상담"]:
                     if answer_mode == "rag_fallback" or (
                         answer_mode is None and not result.get("used_llm", True)
                     ):
-                        # 모델 다운로드 중이거나 답변이 가드레일에 걸린 경우.
+                        # 모델 호출 시간 초과 또는 답변이 가드레일에 걸린 경우.
                         # 사용자가 품질 저하 이유를 알 수 있게 표시합니다.
                         answer += (
-                            "\n\n> ⚠️ LLM 응답을 쓰지 못해 검색된 정비 자료로 "
-                            "대체했습니다. 사이드바에서 LLM 상태를 확인하세요."
+                            "\n\n> ⚠️ LLM 응답이 시간 제한 또는 안전 검사를 "
+                            "통과하지 못해 검색된 정비 자료로 대체했습니다. "
+                            "필요하면 `docker compose logs backend`를 확인하세요."
                         )
                 except Exception as e:
                     answer_sources = []

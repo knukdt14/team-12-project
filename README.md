@@ -163,8 +163,12 @@ docker compose ps
 - FastAPI docs: http://localhost:8000/docs
 - backend / frontend / llm(Ollama) 3개 컨테이너가 함께 실행됩니다.
 - 첫 실행에서는 Ollama가 기본 LLM 모델을 내려받으므로 인터넷 속도에 따라 수 분 걸릴 수 있습니다. 상태는 `docker compose logs -f llm`로 확인합니다.
+- Codespaces CPU 환경에서는 일반 상담의 첫 응답이 2분을 넘길 수 있습니다. 기본 설정은 backend 300초, 한국어 재시도 45초, frontend 360초로 맞춰져 있습니다.
+- `교체해야 하나요?`처럼 현재 진단의 수리 방식만으로 답할 수 있는 질문은 LLM을 기다리지 않고 진단 결과를 기준으로 즉시 안내합니다.
 - 사진 복원은 `OPENAI_API_KEY`, 정비소 검색은 `KAKAO_REST_API_KEY`가 있어야 동작합니다(`.env.example` 참고).
 - 종료는 `docker compose down`, LLM 모델과 앱 로그 볼륨까지 초기화할 때만 `docker compose down -v`를 사용합니다.
+
+> 기존 Codespace의 `.env`는 자동으로 덮어쓰지 않습니다. 예전 값(예: `OLLAMA_TIMEOUT=120`)이 남아 있다면 `.env.example`의 LLM/RAG 시간 제한 값을 반영한 뒤 `docker compose up -d --build --force-recreate backend frontend`를 실행하세요.
 
 소스를 수정한 뒤 이미지를 직접 다시 만들 때는 다음 명령을 사용합니다.
 
